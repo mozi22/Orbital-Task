@@ -11,7 +11,7 @@ from starlette.responses import FileResponse
 
 from takehome.db.session import get_session
 from takehome.services.conversation import get_conversation
-from takehome.services.document import get_document, upload_document
+from takehome.services.document import DocumentLimitExceededError, get_document, upload_document
 
 logger = structlog.get_logger()
 
@@ -60,11 +60,10 @@ async def upload_document_endpoint(
 
     try:
         document = await upload_document(session, conversation_id, file)
+    except DocumentLimitExceededError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
-        error_message = str(e)
-        if "maximum of" in error_message:
-            raise HTTPException(status_code=409, detail=error_message)
-        raise HTTPException(status_code=400, detail=error_message)
+        raise HTTPException(status_code=400, detail=str(e))
 
     logger.info(
         "Document uploaded",

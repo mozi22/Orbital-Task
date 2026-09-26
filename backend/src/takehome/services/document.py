@@ -6,16 +6,20 @@ import uuid
 import fitz  # PyMuPDF
 import structlog
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.config import settings
-from takehome.db.models import Document
+from takehome.db.models import Conversation, Document
 
 logger = structlog.get_logger()
 
 # Maximum number of documents allowed per conversation.
 MAX_DOCUMENTS_PER_CONVERSATION = 5
+
+
+class DocumentLimitExceededError(ValueError):
+    """Raised when a conversation already has the maximum number of documents."""
 
 
 async def upload_document(
@@ -26,13 +30,26 @@ async def upload_document(
     Validates the file is a PDF, saves it to disk, extracts text using PyMuPDF,
     and stores metadata in the database.
 
-    Raises ValueError if the conversation already has the maximum number of
-    documents allowed, or the file is not a PDF.
+    Raises DocumentLimitExceededError if the conversation already has the
+    maximum number of documents allowed, or ValueError if the file is not a
+    PDF.
     """
-    # Check if the conversation has already reached the document cap
-    existing_documents = await get_documents_for_conversation(session, conversation_id)
-    if len(existing_documents) >= MAX_DOCUMENTS_PER_CONVERSATION:
-        raise ValueError(
+    # Lock the conversation row for the duration of the check-then-act cap
+    # check below, so two concurrent uploads to the same conversation can't
+    # both read a count under the cap and both commit past it. Postgres
+    # releases this lock at transaction end (commit/rollback).
+    lock_stmt = select(Conversation.id).where(Conversation.id == conversation_id).with_for_update()
+    await session.execute(lock_stmt)
+
+    # Check if the conversation has already reached the document cap. Counted
+    # via SELECT count(*) rather than fetching full rows (which would include
+    # potentially large extracted_text columns).
+    count_stmt = select(func.count()).select_from(Document).where(
+        Document.conversation_id == conversation_id
+    )
+    existing_count = (await session.execute(count_stmt)).scalar_one()
+    if existing_count >= MAX_DOCUMENTS_PER_CONVERSATION:
+        raise DocumentLimitExceededError(
             "Conversation already has the maximum of "
             f"{MAX_DOCUMENTS_PER_CONVERSATION} documents allowed."
         )
@@ -120,13 +137,8 @@ async def get_document_for_conversation(
     Used by single-document call sites (e.g. chat prompt building) that
     haven't yet been updated to work across multiple documents.
     """
-    stmt = (
-        select(Document)
-        .where(Document.conversation_id == conversation_id)
-        .order_by(Document.uploaded_at)
-    )
-    result = await session.execute(stmt)
-    return result.scalars().first()
+    documents = await get_documents_for_conversation(session, conversation_id)
+    return documents[0] if documents else None
 
 
 async def get_documents_for_conversation(

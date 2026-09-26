@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-import os
-
 from httpx import AsyncClient
 
 from takehome.services.document import get_documents_for_conversation
-from tests.conftest import TestSessionLocal
-
-SAMPLE_PDF_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "sample-docs", "title-report-lot-7.pdf"
-)
+from tests.conftest import TestSessionLocal, read_sample_pdf_bytes
 
 
 def _pdf_upload_tuple(filename: str) -> tuple[str, tuple[str, bytes, str]]:
-    with open(SAMPLE_PDF_PATH, "rb") as f:
-        content = f.read()
-    return ("file", (filename, content, "application/pdf"))
+    return ("file", (filename, read_sample_pdf_bytes(), "application/pdf"))
 
 
 async def test_uploading_five_pdfs_one_by_one_all_succeed(client: AsyncClient) -> None:
