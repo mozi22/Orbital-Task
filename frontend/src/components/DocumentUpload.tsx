@@ -9,12 +9,28 @@ const MAX_CONCURRENT_UPLOADS = 3;
 
 interface DocumentUploadProps {
 	onUpload: (file: File) => void | Promise<void>;
+	/**
+	 * Called exactly once after every file in a batch has settled (whether it
+	 * succeeded or failed), never once per file. Used by callers to reconcile
+	 * state (e.g. refetch the document/conversation) a single time instead of
+	 * racing per-upload updates against each other.
+	 */
+	onBatchSettled?: () => void;
 	uploading?: boolean;
 }
 
 interface BatchProgress {
 	completed: number;
 	total: number;
+}
+
+interface FileUploadError {
+	fileName: string;
+	message: string;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : "Upload failed";
 }
 
 function isPdf(file: File): boolean {
@@ -25,12 +41,14 @@ function isPdf(file: File): boolean {
 
 export function DocumentUpload({
 	onUpload,
+	onBatchSettled,
 	uploading = false,
 }: DocumentUploadProps) {
 	const [dragOver, setDragOver] = useState(false);
 	const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(
 		null,
 	);
+	const [uploadErrors, setUploadErrors] = useState<FileUploadError[]>([]);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
 	const processFiles = useCallback(
@@ -39,9 +57,10 @@ export function DocumentUpload({
 			if (pdfFiles.length === 0) return;
 
 			let completed = 0;
+			setUploadErrors([]);
 			setBatchProgress({ completed, total: pdfFiles.length });
 
-			await runWithConcurrency(
+			const results = await runWithConcurrency(
 				pdfFiles,
 				MAX_CONCURRENT_UPLOADS,
 				async (file) => {
@@ -55,8 +74,23 @@ export function DocumentUpload({
 			);
 
 			setBatchProgress(null);
+
+			// Surface every failure visibly instead of letting it disappear —
+			// dropping a batch's worth of files must never look like every one
+			// of them silently succeeded.
+			const failures = results
+				.filter((result) => result.status === "rejected")
+				.map((result) => ({
+					fileName: result.item.name,
+					message: errorMessage(result.error),
+				}));
+			setUploadErrors(failures);
+
+			// Fire once for the whole batch, not once per file, so callers can
+			// reconcile state (e.g. refetch) a single deterministic time.
+			onBatchSettled?.();
 		},
-		[onUpload],
+		[onUpload, onBatchSettled],
 	);
 
 	const handleDragOver = useCallback((e: DragEvent) => {
@@ -95,50 +129,66 @@ export function DocumentUpload({
 	const isBusy = uploading || batchProgress !== null;
 
 	return (
-		<button
-			type="button"
-			className={`w-full max-w-md cursor-pointer rounded-xl border-2 border-dashed px-8 py-10 text-center transition-colors ${
-				dragOver
-					? "border-neutral-400 bg-neutral-100"
-					: "border-neutral-200 bg-white hover:border-neutral-300 hover:bg-neutral-50"
-			}`}
-			onDragOver={handleDragOver}
-			onDragLeave={handleDragLeave}
-			onDrop={handleDrop}
-			onClick={handleClick}
-		>
-			<input
-				ref={fileInputRef}
-				type="file"
-				accept=".pdf"
-				multiple
-				className="hidden"
-				onChange={handleFileChange}
-			/>
+		<div className="flex w-full max-w-md flex-col gap-2">
+			<button
+				type="button"
+				className={`w-full cursor-pointer rounded-xl border-2 border-dashed px-8 py-10 text-center transition-colors ${
+					dragOver
+						? "border-neutral-400 bg-neutral-100"
+						: "border-neutral-200 bg-white hover:border-neutral-300 hover:bg-neutral-50"
+				}`}
+				onDragOver={handleDragOver}
+				onDragLeave={handleDragLeave}
+				onDrop={handleDrop}
+				onClick={handleClick}
+			>
+				<input
+					ref={fileInputRef}
+					type="file"
+					accept=".pdf"
+					multiple
+					className="hidden"
+					onChange={handleFileChange}
+				/>
 
-			{isBusy ? (
-				<div className="flex flex-col items-center">
-					<Loader2 className="mb-3 h-10 w-10 animate-spin text-neutral-400" />
-					<p className="text-sm font-medium text-neutral-600">
-						{batchProgress && batchProgress.total > 1
-							? `Uploading document ${Math.min(
-									batchProgress.completed + 1,
-									batchProgress.total,
-								)} of ${batchProgress.total}...`
-							: "Uploading document..."}
-					</p>
-				</div>
-			) : (
-				<div className="flex flex-col items-center">
-					<Upload className="mb-3 h-10 w-10 text-neutral-400" />
-					<p className="text-sm font-medium text-neutral-600">
-						Upload PDF documents
-					</p>
-					<p className="mt-1 text-xs text-neutral-400">
-						Click or drag and drop one or more files
-					</p>
+				{isBusy ? (
+					<div className="flex flex-col items-center">
+						<Loader2 className="mb-3 h-10 w-10 animate-spin text-neutral-400" />
+						<p className="text-sm font-medium text-neutral-600">
+							{batchProgress && batchProgress.total > 1
+								? `Uploading document ${Math.min(
+										batchProgress.completed + 1,
+										batchProgress.total,
+									)} of ${batchProgress.total}...`
+								: "Uploading document..."}
+						</p>
+					</div>
+				) : (
+					<div className="flex flex-col items-center">
+						<Upload className="mb-3 h-10 w-10 text-neutral-400" />
+						<p className="text-sm font-medium text-neutral-600">
+							Upload PDF documents
+						</p>
+						<p className="mt-1 text-xs text-neutral-400">
+							Click or drag and drop one or more files
+						</p>
+					</div>
+				)}
+			</button>
+
+			{uploadErrors.length > 0 && (
+				<div
+					role="alert"
+					className="rounded-lg bg-red-50 px-3 py-2 text-left text-xs text-red-600"
+				>
+					{uploadErrors.map((fileError) => (
+						<p key={fileError.fileName}>
+							<span className="font-medium">{fileError.fileName}</span>:{" "}
+							{fileError.message}
+						</p>
+					))}
 				</div>
 			)}
-		</button>
+		</div>
 	);
 }

@@ -62,6 +62,25 @@ describe("runWithConcurrency", () => {
 		expect(processed.sort()).toEqual([1, 3]);
 	});
 
+	it("returns per-item settled results instead of discarding failures", async () => {
+		const results = await runWithConcurrency([1, 2, 3], 2, async (item) => {
+			if (item === 2) {
+				throw new Error("boom");
+			}
+		});
+
+		expect(results).toHaveLength(3);
+		const byItem = new Map(results.map((r) => [r.item, r]));
+		expect(byItem.get(1)).toMatchObject({ status: "fulfilled" });
+		expect(byItem.get(3)).toMatchObject({ status: "fulfilled" });
+		const failed = byItem.get(2);
+		expect(failed?.status).toBe("rejected");
+		if (failed?.status === "rejected") {
+			expect(failed.error).toBeInstanceOf(Error);
+			expect((failed.error as Error).message).toBe("boom");
+		}
+	});
+
 	it("caps effective concurrency at the number of items when limit is larger", async () => {
 		const task = vi.fn(async () => {});
 		await runWithConcurrency([1, 2], 10, task);

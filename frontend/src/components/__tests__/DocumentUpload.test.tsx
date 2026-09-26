@@ -86,6 +86,48 @@ describe("DocumentUpload", () => {
 		await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(5));
 	});
 
+	it("surfaces a visible error for files that fail to upload without silently dropping them", async () => {
+		const onUpload = vi.fn(async (file: File) => {
+			if (file.name === "bad.pdf") {
+				throw new Error("409: document already exists");
+			}
+		});
+		const { container } = render(<DocumentUpload onUpload={onUpload} />);
+		const dropzone = container.querySelector("button") as HTMLElement;
+
+		dropFiles(dropzone, [makePdf("good.pdf"), makePdf("bad.pdf")]);
+
+		await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(2));
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"409: document already exists",
+			),
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("bad.pdf");
+	});
+
+	it("calls onBatchSettled exactly once after a batch finishes, regardless of per-file outcome", async () => {
+		const onUpload = vi.fn(async (file: File) => {
+			if (file.name === "bad.pdf") {
+				throw new Error("boom");
+			}
+		});
+		const onBatchSettled = vi.fn();
+		const { container } = render(
+			<DocumentUpload onUpload={onUpload} onBatchSettled={onBatchSettled} />,
+		);
+		const dropzone = container.querySelector("button") as HTMLElement;
+
+		dropFiles(dropzone, [
+			makePdf("good.pdf"),
+			makePdf("bad.pdf"),
+			makePdf("also-good.pdf"),
+		]);
+
+		await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(3));
+		await waitFor(() => expect(onBatchSettled).toHaveBeenCalledTimes(1));
+	});
+
 	it("shows a busy/uploading state while a batch is in flight", async () => {
 		const gate = deferred<void>();
 		const onUpload = vi.fn().mockReturnValue(gate.promise);
