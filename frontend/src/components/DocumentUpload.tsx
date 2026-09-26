@@ -1,9 +1,26 @@
 import { Loader2, Upload } from "lucide-react";
 import { type DragEvent, useCallback, useRef, useState } from "react";
+import { runWithConcurrency } from "../lib/concurrency";
+
+// Batch uploads go through the existing single-file endpoint, one call per
+// file, with at most this many in flight at once (limited concurrency, not
+// fully serial and not all-at-once).
+const MAX_CONCURRENT_UPLOADS = 3;
 
 interface DocumentUploadProps {
-	onUpload: (file: File) => void;
+	onUpload: (file: File) => void | Promise<void>;
 	uploading?: boolean;
+}
+
+interface BatchProgress {
+	completed: number;
+	total: number;
+}
+
+function isPdf(file: File): boolean {
+	return (
+		file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+	);
 }
 
 export function DocumentUpload({
@@ -11,7 +28,36 @@ export function DocumentUpload({
 	uploading = false,
 }: DocumentUploadProps) {
 	const [dragOver, setDragOver] = useState(false);
+	const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(
+		null,
+	);
 	const fileInputRef = useRef<HTMLInputElement>(null);
+
+	const processFiles = useCallback(
+		async (files: File[]) => {
+			const pdfFiles = files.filter(isPdf);
+			if (pdfFiles.length === 0) return;
+
+			let completed = 0;
+			setBatchProgress({ completed, total: pdfFiles.length });
+
+			await runWithConcurrency(
+				pdfFiles,
+				MAX_CONCURRENT_UPLOADS,
+				async (file) => {
+					try {
+						await onUpload(file);
+					} finally {
+						completed += 1;
+						setBatchProgress({ completed, total: pdfFiles.length });
+					}
+				},
+			);
+
+			setBatchProgress(null);
+		},
+		[onUpload],
+	);
 
 	const handleDragOver = useCallback((e: DragEvent) => {
 		e.preventDefault();
@@ -27,12 +73,9 @@ export function DocumentUpload({
 		(e: DragEvent) => {
 			e.preventDefault();
 			setDragOver(false);
-			const file = e.dataTransfer.files[0];
-			if (file && file.type === "application/pdf") {
-				onUpload(file);
-			}
+			processFiles(Array.from(e.dataTransfer.files));
 		},
-		[onUpload],
+		[processFiles],
 	);
 
 	const handleClick = useCallback(() => {
@@ -41,16 +84,15 @@ export function DocumentUpload({
 
 	const handleFileChange = useCallback(
 		(e: React.ChangeEvent<HTMLInputElement>) => {
-			const file = e.target.files?.[0];
-			if (file) {
-				onUpload(file);
-			}
+			processFiles(Array.from(e.target.files ?? []));
 			if (fileInputRef.current) {
 				fileInputRef.current.value = "";
 			}
 		},
-		[onUpload],
+		[processFiles],
 	);
+
+	const isBusy = uploading || batchProgress !== null;
 
 	return (
 		<button
@@ -69,25 +111,31 @@ export function DocumentUpload({
 				ref={fileInputRef}
 				type="file"
 				accept=".pdf"
+				multiple
 				className="hidden"
 				onChange={handleFileChange}
 			/>
 
-			{uploading ? (
+			{isBusy ? (
 				<div className="flex flex-col items-center">
 					<Loader2 className="mb-3 h-10 w-10 animate-spin text-neutral-400" />
 					<p className="text-sm font-medium text-neutral-600">
-						Uploading document...
+						{batchProgress && batchProgress.total > 1
+							? `Uploading document ${Math.min(
+									batchProgress.completed + 1,
+									batchProgress.total,
+								)} of ${batchProgress.total}...`
+							: "Uploading document..."}
 					</p>
 				</div>
 			) : (
 				<div className="flex flex-col items-center">
 					<Upload className="mb-3 h-10 w-10 text-neutral-400" />
 					<p className="text-sm font-medium text-neutral-600">
-						Upload a PDF document
+						Upload PDF documents
 					</p>
 					<p className="mt-1 text-xs text-neutral-400">
-						Click or drag and drop
+						Click or drag and drop one or more files
 					</p>
 				</div>
 			)}
