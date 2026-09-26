@@ -14,6 +14,9 @@ from takehome.db.models import Document
 
 logger = structlog.get_logger()
 
+# Maximum number of documents allowed per conversation.
+MAX_DOCUMENTS_PER_CONVERSATION = 5
+
 
 async def upload_document(
     session: AsyncSession, conversation_id: str, file: UploadFile
@@ -23,12 +26,16 @@ async def upload_document(
     Validates the file is a PDF, saves it to disk, extracts text using PyMuPDF,
     and stores metadata in the database.
 
-    Raises ValueError if the conversation already has a document or the file is not a PDF.
+    Raises ValueError if the conversation already has the maximum number of
+    documents allowed, or the file is not a PDF.
     """
-    # Check if conversation already has a document
-    existing = await get_document_for_conversation(session, conversation_id)
-    if existing is not None:
-        raise ValueError("Conversation already has a document. Only one document per conversation is allowed.")
+    # Check if the conversation has already reached the document cap
+    existing_documents = await get_documents_for_conversation(session, conversation_id)
+    if len(existing_documents) >= MAX_DOCUMENTS_PER_CONVERSATION:
+        raise ValueError(
+            "Conversation already has the maximum of "
+            f"{MAX_DOCUMENTS_PER_CONVERSATION} documents allowed."
+        )
 
     # Validate file type
     if file.content_type not in ("application/pdf", "application/x-pdf"):
@@ -108,7 +115,28 @@ async def get_document(session: AsyncSession, document_id: str) -> Document | No
 async def get_document_for_conversation(
     session: AsyncSession, conversation_id: str
 ) -> Document | None:
-    """Get the document for a conversation, if one exists."""
-    stmt = select(Document).where(Document.conversation_id == conversation_id)
+    """Get the first document for a conversation, if one exists.
+
+    Used by single-document call sites (e.g. chat prompt building) that
+    haven't yet been updated to work across multiple documents.
+    """
+    stmt = (
+        select(Document)
+        .where(Document.conversation_id == conversation_id)
+        .order_by(Document.uploaded_at)
+    )
     result = await session.execute(stmt)
-    return result.scalar_one_or_none()
+    return result.scalars().first()
+
+
+async def get_documents_for_conversation(
+    session: AsyncSession, conversation_id: str
+) -> list[Document]:
+    """Get all documents for a conversation, ordered by upload time."""
+    stmt = (
+        select(Document)
+        .where(Document.conversation_id == conversation_id)
+        .order_by(Document.uploaded_at)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())

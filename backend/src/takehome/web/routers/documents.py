@@ -50,8 +50,8 @@ async def upload_document_endpoint(
 ) -> DocumentOut:
     """Upload a PDF document for a conversation.
 
-    Only one document per conversation is allowed. Returns 409 if a document
-    already exists.
+    Up to 5 documents per conversation are allowed. Returns 409 once the cap
+    is reached.
     """
     # Verify the conversation exists
     conversation = await get_conversation(session, conversation_id)
@@ -62,7 +62,7 @@ async def upload_document_endpoint(
         document = await upload_document(session, conversation_id, file)
     except ValueError as e:
         error_message = str(e)
-        if "already has a document" in error_message:
+        if "maximum of" in error_message:
             raise HTTPException(status_code=409, detail=error_message)
         raise HTTPException(status_code=400, detail=error_message)
 
