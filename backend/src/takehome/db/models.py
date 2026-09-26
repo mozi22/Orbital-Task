@@ -58,6 +58,10 @@ class Document(Base):
         ForeignKey("conversations.id", ondelete="CASCADE")
     )
     filename: Mapped[str] = mapped_column(String)
+    # User-facing label, defaulted to `filename` at creation time (see #12) and
+    # independently editable afterward (see #12/#17). `filename` itself is left
+    # untouched as the original upload name for storage/audit purposes.
+    display_name: Mapped[str] = mapped_column(String)
     file_path: Mapped[str] = mapped_column(String)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_count: Mapped[int] = mapped_column(Integer, default=0)
