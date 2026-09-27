@@ -112,6 +112,7 @@ async def upload_document(
     document = Document(
         conversation_id=conversation_id,
         filename=original_filename,
+        display_name=original_filename,
         file_path=file_path,
         extracted_text=extracted_text if extracted_text else None,
         page_count=page_count,

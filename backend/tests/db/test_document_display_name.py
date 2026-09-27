@@ -52,11 +52,20 @@ async def _fetch_one(sql: str, params: dict[str, object]) -> object:
 
 @pytest.fixture
 def reset_schema():
-    """Drop everything and re-apply migrations up to (but not including) the
+    """Wipe the schema and re-apply migrations up to (but not including) the
     display_name migration, leaving a clean pre-migration schema for each test.
+
+    The wipe uses a raw `DROP SCHEMA` rather than `alembic downgrade base`:
+    other test modules reset state via `Base.metadata.drop_all`, which drops
+    the ORM's own tables but leaves `alembic_version` untouched, so Alembic's
+    stored "current revision" can drift out of sync with what's actually in
+    the database between test runs. Wiping the whole schema directly (which
+    also removes `alembic_version`) makes this fixture correct regardless of
+    what state prior tests left behind.
     """
     cfg = _alembic_config()
-    command.downgrade(cfg, "base")
+    asyncio.run(_run_sql("DROP SCHEMA public CASCADE"))
+    asyncio.run(_run_sql("CREATE SCHEMA public"))
     command.upgrade(cfg, "001_initial")
     yield cfg
     # Leave the DB migrated to head so other tests/tools see a consistent state.
