@@ -113,14 +113,7 @@ async def get_conversation_endpoint(
 
     doc_info: DocumentInfo | None = None
     if conversation.documents:
-        doc = conversation.documents[0]
-        doc_info = DocumentInfo(
-            id=doc.id,
-            filename=doc.filename,
-            display_name=doc.display_name,
-            page_count=doc.page_count,
-            uploaded_at=doc.uploaded_at,
-        )
+        doc_info = DocumentInfo.model_validate(conversation.documents[0])
 
     return ConversationDetail(
         id=conversation.id,
@@ -145,14 +138,7 @@ async def update_conversation_endpoint(
 
     doc_info: DocumentInfo | None = None
     if conversation.documents:
-        doc = conversation.documents[0]
-        doc_info = DocumentInfo(
-            id=doc.id,
-            filename=doc.filename,
-            display_name=doc.display_name,
-            page_count=doc.page_count,
-            uploaded_at=doc.uploaded_at,
-        )
+        doc_info = DocumentInfo.model_validate(conversation.documents[0])
 
     return ConversationDetail(
         id=conversation.id,
