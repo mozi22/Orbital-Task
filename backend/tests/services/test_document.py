@@ -37,6 +37,25 @@ async def test_upload_document_succeeds_below_cap(session: AsyncSession) -> None
     assert len(docs) == 1
 
 
+async def test_upload_document_defaults_display_name_to_original_filename(
+    session: AsyncSession,
+) -> None:
+    """Issue #12: display_name must default to the uploaded filename, with no
+    separate naming step required at upload time."""
+    conversation = await create_conversation(session)
+
+    document = await upload_document(
+        session, conversation.id, _make_upload_file("lease-agreement.pdf")
+    )
+
+    assert document.display_name == "lease-agreement.pdf"
+    assert document.display_name == document.filename
+
+    # Persisted, not just set on the in-memory object returned by the call.
+    docs = await get_documents_for_conversation(session, conversation.id)
+    assert docs[0].display_name == "lease-agreement.pdf"
+
+
 async def test_upload_document_allows_up_to_five_documents(session: AsyncSession) -> None:
     conversation = await create_conversation(session)
 

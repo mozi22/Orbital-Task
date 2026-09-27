@@ -25,6 +25,30 @@ async def test_uploading_five_pdfs_one_by_one_all_succeed(client: AsyncClient) -
         assert resp.json()["filename"] == f"doc-{i}.pdf"
 
 
+async def test_uploading_a_pdf_sets_display_name_to_filename_in_the_db(
+    client: AsyncClient,
+) -> None:
+    """Issue #12 acceptance criterion: uploading via the existing endpoint and
+    inspecting the DB confirms display_name is set, with no extra action."""
+    create_resp = await client.post("/api/conversations")
+    conversation_id = create_resp.json()["id"]
+
+    field_name, file_tuple = _pdf_upload_tuple("lease-agreement.pdf")
+    resp = await client.post(
+        f"/api/conversations/{conversation_id}/documents",
+        files=[(field_name, file_tuple)],
+    )
+    assert resp.status_code == 201, resp.text
+    document_id = resp.json()["id"]
+
+    async with TestSessionLocal() as session:
+        docs = await get_documents_for_conversation(session, conversation_id)
+
+    assert len(docs) == 1
+    assert docs[0].id == document_id
+    assert docs[0].display_name == "lease-agreement.pdf"
+
+
 async def test_sixth_upload_returns_409_and_conversation_keeps_original_five(
     client: AsyncClient,
 ) -> None:
