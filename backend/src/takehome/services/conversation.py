@@ -13,14 +13,11 @@ async def create_conversation(session: AsyncSession) -> Conversation:
     conversation = Conversation()
     session.add(conversation)
     await session.commit()
-    # `created_at`/`updated_at` are populated by the DB via server defaults,
-    # so this instance's in-memory copies are still unset until refreshed.
-    # `session.refresh` expires *all* attributes on the instance before
-    # reloading the ones named, which would leave `documents` expired and
-    # force an un-awaitable lazy load on first access. A brand-new
-    # conversation always has zero documents, so restore that in-memory
-    # value directly via `set_committed_value` instead of re-fetching it.
-    await session.refresh(conversation, attribute_names=["created_at", "updated_at"])
+    # Postgres's implicit RETURNING on the INSERT already populates
+    # `created_at`/`updated_at` in memory on commit, so no refresh is needed
+    # for those. A brand-new conversation always has zero documents, and
+    # that relationship was never loaded on this instance, so set it
+    # directly via `set_committed_value` instead of issuing a query for it.
     set_committed_value(conversation, "documents", [])
     return conversation
 
@@ -58,10 +55,11 @@ async def update_conversation(
     documents = conversation.documents
     await session.commit()
     # `updated_at` is bumped by the DB via `onupdate`, so refresh it here.
-    # `session.refresh` expires *all* attributes first, which would otherwise
-    # drop the `documents` collection eagerly loaded by `get_conversation`
-    # above and force an un-awaitable lazy load on next access — so restore
-    # it in-memory via `set_committed_value` rather than re-fetching it.
+    # This scoped `attribute_names=[...]` refresh only expires the named
+    # attributes, not `documents`, so the collection eagerly loaded by
+    # `get_conversation` above isn't actually at risk here. Restoring it via
+    # `set_committed_value` below is defensive belt-and-suspenders — cheap
+    # insurance against that behavior changing, not a fix for a live crash.
     await session.refresh(conversation, attribute_names=["title", "updated_at"])
     set_committed_value(conversation, "documents", documents)
     return conversation
