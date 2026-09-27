@@ -13,7 +13,7 @@ from takehome.db.session import get_session
 from takehome.services.conversation import get_conversation
 from takehome.services.document import (
     DocumentLimitExceededError,
-    DocumentUploadError,
+    DocumentValidationError,
     InvalidDisplayNameError,
     get_document,
     rename_document,
@@ -87,7 +87,7 @@ async def upload_document_endpoint(
         raise HTTPException(
             status_code=409, detail={"code": e.code, "message": str(e)}
         ) from e
-    except DocumentUploadError as e:
+    except DocumentValidationError as e:
         raise HTTPException(
             status_code=400, detail={"code": e.code, "message": str(e)}
         ) from e

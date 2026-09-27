@@ -18,8 +18,8 @@ logger = structlog.get_logger()
 MAX_DOCUMENTS_PER_CONVERSATION = 5
 
 
-class DocumentUploadError(ValueError):
-    """Base class for document upload validation failures.
+class DocumentValidationError(ValueError):
+    """Base class for document validation failures (upload and rename alike).
 
     Each subclass carries a distinct ``code`` so callers (the router, and
     ultimately batch-upload UX) can tell failure reasons apart programmatically
@@ -31,33 +31,36 @@ class DocumentUploadError(ValueError):
     one of the documented, publicly-relied-upon codes.
     """
 
-    code = "document_upload_error"
+    code = "document_validation_error"
 
 
-class DocumentLimitExceededError(DocumentUploadError):
+class DocumentLimitExceededError(DocumentValidationError):
     """Raised when a conversation already has the maximum number of documents."""
 
     code = "document_limit_exceeded"
 
 
-class InvalidFileTypeError(DocumentUploadError):
+class InvalidFileTypeError(DocumentValidationError):
     """Raised when the uploaded file is not a PDF."""
 
     code = "invalid_file_type"
 
 
-class FileTooLargeError(DocumentUploadError):
+class FileTooLargeError(DocumentValidationError):
     """Raised when the uploaded file exceeds the configured size limit."""
 
     code = "file_too_large"
 
 
-class InvalidDisplayNameError(ValueError):
+class InvalidDisplayNameError(DocumentValidationError):
     """Raised when a rename request's `display_name` is empty or blank.
 
-    Carries a ``code`` for the same reason as `DocumentUploadError`'s
-    subclasses: so the router can surface a distinct, programmatically
-    checkable failure reason instead of pattern-matching message text.
+    Joins the same `DocumentValidationError` family as the upload-validation
+    subclasses above, for the same reason: so the router can surface a
+    distinct, programmatically checkable failure reason instead of
+    pattern-matching message text — and so a blanket
+    ``except DocumentValidationError`` catches any future validation
+    subclass, upload or rename alike, for free.
     """
 
     code = "invalid_display_name"
@@ -74,7 +77,7 @@ async def upload_document(
     Raises DocumentLimitExceededError if the conversation already has the
     maximum number of documents allowed, InvalidFileTypeError if the file is
     not a PDF, or FileTooLargeError if it exceeds the configured size limit.
-    Each is a distinctly-coded subclass of DocumentUploadError so callers can
+    Each is a distinctly-coded subclass of DocumentValidationError so callers can
     tell the failure reasons apart without parsing message text.
     """
     # Lock the conversation row for the duration of the check-then-act cap
