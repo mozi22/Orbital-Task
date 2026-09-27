@@ -159,14 +159,11 @@ function DocumentLabel({ document, onRename }: DocumentLabelProps) {
 export function DocumentViewer({ documents, onRename }: DocumentViewerProps) {
 	const [width, setWidth] = useState(DEFAULT_WIDTH);
 	const [dragging, setDragging] = useState(false);
-	// Which sections are currently expanded. A `Set` (rather than a single
-	// id) intentionally allows more than one section open at once for now —
-	// collapsing whichever section was previously open when a new one is
-	// expanded is single-expand behavior, tracked separately (issue #26).
-	// Unlimited simultaneous expansion is acceptable resource-wise here: the
-	// document cap (5 documents, see upload widget) bounds the worst case to
-	// 5 concurrently-mounted PDF viewers.
-	const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+	// Single-expand behavior (per the Milestone 1 PRD): at most one section
+	// is open at a time. Opening a section collapses whichever was
+	// previously open, each rendering only its own document's react-pdf
+	// view. `null` means every section is collapsed.
+	const [expandedId, setExpandedId] = useState<string | null>(null);
 	// Every section that has ever been expanded at least once. A section's
 	// PDF state (numPages/currentPage/pdfLoading/pdfError, held inside
 	// DocumentAccordionSection) must survive collapse/re-expand cycles, so
@@ -209,16 +206,17 @@ export function DocumentViewer({ documents, onRename }: DocumentViewerProps) {
 	);
 
 	const toggleSection = useCallback((documentId: string) => {
-		setExpandedIds((prev) => {
-			const next = new Set(prev);
-			if (next.has(documentId)) {
-				next.delete(documentId);
-			} else {
-				next.add(documentId);
+		setExpandedId((prev) => {
+			// Clicking the already-open section collapses it (back to
+			// nothing open); clicking a collapsed section opens it and, by
+			// replacing `prev` outright rather than adding to a set,
+			// implicitly collapses whichever section was previously open.
+			const next = prev === documentId ? null : documentId;
+			if (next !== null) {
 				setEverExpandedIds((everPrev) => {
-					if (everPrev.has(documentId)) return everPrev;
+					if (everPrev.has(next)) return everPrev;
 					const nextEver = new Set(everPrev);
-					nextEver.add(documentId);
+					nextEver.add(next);
 					return nextEver;
 				});
 			}
@@ -258,7 +256,7 @@ export function DocumentViewer({ documents, onRename }: DocumentViewerProps) {
 				<DocumentAccordionSection
 					key={document.id}
 					document={document}
-					expanded={expandedIds.has(document.id)}
+					expanded={expandedId === document.id}
 					everExpanded={everExpandedIds.has(document.id)}
 					onToggle={() => toggleSection(document.id)}
 					pdfPageWidth={pdfPageWidth}
