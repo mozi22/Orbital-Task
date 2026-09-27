@@ -12,6 +12,7 @@ function makeDocument(overrides: Partial<Document> = {}): Document {
 		display_name: "lease.pdf",
 		page_count: 3,
 		uploaded_at: "2026-01-01T00:00:00Z",
+		document_type: null,
 		...overrides,
 	};
 }
@@ -161,6 +162,47 @@ describe("useDocuments", () => {
 			expect(result.current.error).toBe(
 				"400: display_name must not be empty or blank.",
 			),
+		);
+		expect(result.current.documents).toEqual([original]);
+	});
+
+	it("updates the matching document in place when a document_type change succeeds", async () => {
+		const original = makeDocument({ id: "doc-1", document_type: null });
+		const other = makeDocument({ id: "doc-2", document_type: null });
+		vi.spyOn(api, "fetchConversation").mockResolvedValue(
+			makeConversationDetail([original, other]),
+		);
+		const updated = { ...original, document_type: "lease" as const };
+		vi.spyOn(api, "updateDocumentType").mockResolvedValue(updated);
+
+		const { result } = renderHook(() => useDocuments("conv-1"));
+		await waitFor(() => expect(result.current.documents).toHaveLength(2));
+
+		await result.current.updateDocumentType("doc-1", "lease");
+
+		await waitFor(() =>
+			expect(result.current.documents).toEqual([updated, other]),
+		);
+		expect(api.updateDocumentType).toHaveBeenCalledWith("doc-1", "lease");
+	});
+
+	it("re-throws and surfaces document_type update errors without mutating existing documents", async () => {
+		const original = makeDocument({ id: "doc-1", document_type: null });
+		vi.spyOn(api, "fetchConversation").mockResolvedValue(
+			makeConversationDetail([original]),
+		);
+		vi.spyOn(api, "updateDocumentType").mockRejectedValue(
+			new Error("404: Document not found"),
+		);
+
+		const { result } = renderHook(() => useDocuments("conv-1"));
+		await waitFor(() => expect(result.current.documents).toHaveLength(1));
+
+		await expect(
+			result.current.updateDocumentType("doc-1", "lease"),
+		).rejects.toThrow("404: Document not found");
+		await waitFor(() =>
+			expect(result.current.error).toBe("404: Document not found"),
 		);
 		expect(result.current.documents).toEqual([original]);
 	});

@@ -15,6 +15,7 @@ from takehome.services.conversation import (
     list_conversations,
     update_conversation,
 )
+from takehome.web.schemas import DocumentBase
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -34,14 +35,9 @@ class ConversationListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DocumentInfo(BaseModel):
-    id: str
-    filename: str
-    display_name: str
-    page_count: int
-    uploaded_at: datetime
-
-    model_config = {"from_attributes": True}
+class DocumentInfo(DocumentBase):
+    """Same shape as `documents.DocumentOut` minus `conversation_id` (this is
+    already nested under a conversation, so it'd be redundant here)."""
 
 
 class ConversationDetail(BaseModel):

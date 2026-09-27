@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from typing import Any
 
 import fitz  # PyMuPDF
 import structlog
@@ -10,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.config import settings
-from takehome.db.models import Document
+from takehome.db.models import Document, DocumentType
 from takehome.services.conversation import lock_conversation_for_update
 from takehome.services.llm import classify_document_type
 
@@ -18,6 +19,21 @@ logger = structlog.get_logger()
 
 # Maximum number of documents allowed per conversation.
 MAX_DOCUMENTS_PER_CONVERSATION = 5
+
+
+class _UnsetType:
+    """Sentinel type for `update_document`'s keyword-only fields, so a field
+    genuinely absent from a request (leave untouched) can be told apart from
+    one explicitly passed as `None` (e.g. clearing `document_type` back to
+    unclassified)."""
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic only
+        return "UNSET"
+
+
+# The one instance of `_UnsetType`; pass this as the default for either
+# optional, independently-settable field on `update_document`.
+UNSET: Any = _UnsetType()
 
 
 class DocumentValidationError(ValueError):
@@ -190,24 +206,43 @@ async def get_document(session: AsyncSession, document_id: str) -> Document | No
     return result.scalar_one_or_none()
 
 
-async def rename_document(
-    session: AsyncSession, document_id: str, display_name: str
+async def update_document(
+    session: AsyncSession,
+    document_id: str,
+    *,
+    display_name: str | Any = UNSET,
+    document_type: DocumentType | None | Any = UNSET,
 ) -> Document | None:
-    """Update a document's user-facing `display_name`.
+    """Update one or both of a document's user-editable fields
+    (`display_name`, see #17, and `document_type`, see #33) in a single
+    fetch → mutate → commit → refresh transaction.
 
-    The underlying `filename` (the original upload name) and the file on disk
-    are left untouched — only the `display_name` column is written.
+    Each field defaults to `UNSET` (leave untouched); pass an actual value
+    -- including `None` for `document_type`, to clear it back to
+    unclassified -- to update that field. Passing both together updates
+    both durably in one commit, so a failure partway through (e.g. the row
+    being deleted concurrently) can never leave one field applied and the
+    other not: either both changes reach the row or neither does.
 
-    Raises InvalidDisplayNameError if `display_name` is empty or made up
-    entirely of whitespace. Returns None if no document with that id exists.
+    The underlying `filename` (the original upload name) and the file on
+    disk are never touched by this, regardless of which fields are given.
+
+    Raises InvalidDisplayNameError if `display_name` is given but is empty
+    or made up entirely of whitespace. Returns None if no document with
+    that id exists (before anything is written).
     """
-    if not display_name.strip():
+    if display_name is not UNSET and not display_name.strip():
         raise InvalidDisplayNameError("display_name must not be empty or blank.")
 
     document = await get_document(session, document_id)
     if document is None:
         return None
-    document.display_name = display_name
+
+    if display_name is not UNSET:
+        document.display_name = display_name
+    if document_type is not UNSET:
+        document.document_type = document_type
+
     await session.commit()
     await session.refresh(document)
     return document

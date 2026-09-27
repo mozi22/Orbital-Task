@@ -19,7 +19,7 @@ from takehome.services.document import (
     FileTooLargeError,
     InvalidFileTypeError,
     get_documents_for_conversation,
-    rename_document,
+    update_document,
     upload_document,
 )
 from takehome.services.llm import classification_agent
@@ -161,7 +161,7 @@ async def test_rename_document_updates_display_name_and_leaves_filename(
     conversation = await create_conversation(session)
     document = await upload_document(session, conversation.id, _make_upload_file("lease.pdf"))
 
-    renamed = await rename_document(session, document.id, "Lease Agreement")
+    renamed = await update_document(session, document.id, display_name="Lease Agreement")
 
     assert renamed is not None
     assert renamed.display_name == "Lease Agreement"
@@ -171,7 +171,7 @@ async def test_rename_document_updates_display_name_and_leaves_filename(
 async def test_rename_document_returns_none_for_missing_document(
     session: AsyncSession,
 ) -> None:
-    result = await rename_document(session, "does-not-exist", "New Name")
+    result = await update_document(session, "does-not-exist", display_name="New Name")
 
     assert result is None
 

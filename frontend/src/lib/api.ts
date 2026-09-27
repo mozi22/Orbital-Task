@@ -2,6 +2,7 @@ import type {
 	Conversation,
 	ConversationDetail,
 	Document,
+	DocumentType,
 	Message,
 } from "../types";
 
@@ -170,6 +171,18 @@ export async function renameDocument(
 		method: "PATCH",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ display_name: displayName }),
+	});
+	return handleResponse<Document>(res);
+}
+
+export async function updateDocumentType(
+	documentId: string,
+	documentType: DocumentType,
+): Promise<Document> {
+	const res = await fetch(`${BASE}/documents/${documentId}`, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ document_type: documentType }),
 	});
 	return handleResponse<Document>(res);
 }

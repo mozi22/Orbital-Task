@@ -15,6 +15,14 @@ export interface Message {
 	created_at: string;
 }
 
+/**
+ * Mirrors the backend's `DocumentType` enum
+ * (backend/src/takehome/db/models.py). `null` until auto-classification
+ * runs (Milestone 2's #32, not yet built) or the user corrects it via the
+ * dropdown next to the rename pencil (see #33).
+ */
+export type DocumentType = "title" | "lease" | "environmental" | "other";
+
 export interface Document {
 	id: string;
 	conversation_id: string;
@@ -22,6 +30,7 @@ export interface Document {
 	display_name: string;
 	page_count: number;
 	uploaded_at: string;
+	document_type: DocumentType | null;
 }
 
 export interface ConversationDetail extends Conversation {
