@@ -13,7 +13,8 @@ from takehome.db.session import get_session
 from takehome.services.conversation import get_conversation
 from takehome.services.document import (
     DocumentLimitExceededError,
-    DocumentUploadError,
+    DocumentValidationError,
+    InvalidDisplayNameError,
     get_document,
     rename_document,
     upload_document,
@@ -86,7 +87,7 @@ async def upload_document_endpoint(
         raise HTTPException(
             status_code=409, detail={"code": e.code, "message": str(e)}
         ) from e
-    except DocumentUploadError as e:
+    except DocumentValidationError as e:
         raise HTTPException(
             status_code=400, detail={"code": e.code, "message": str(e)}
         ) from e
@@ -109,9 +110,17 @@ async def rename_document_endpoint(
 ) -> DocumentOut:
     """Rename a document's user-facing `display_name`.
 
-    The underlying `filename` (the original upload name) is left unchanged.
+    The underlying `filename` (the original upload name) and the stored file
+    on disk are left unchanged. Returns 400 if `display_name` is empty or
+    blank, 404 if no document with that id exists.
     """
-    document = await rename_document(session, document_id, body.display_name)
+    try:
+        document = await rename_document(session, document_id, body.display_name)
+    except InvalidDisplayNameError as e:
+        raise HTTPException(
+            status_code=400, detail={"code": e.code, "message": str(e)}
+        ) from e
+
     if document is None:
         raise HTTPException(
             status_code=404,
