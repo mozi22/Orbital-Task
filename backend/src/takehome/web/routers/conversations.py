@@ -47,6 +47,7 @@ class ConversationDetail(BaseModel):
 class DocumentInfo(BaseModel):
     id: str
     filename: str
+    display_name: str
     page_count: int
     uploaded_at: datetime
 
@@ -116,6 +117,7 @@ async def get_conversation_endpoint(
         doc_info = DocumentInfo(
             id=doc.id,
             filename=doc.filename,
+            display_name=doc.display_name,
             page_count=doc.page_count,
             uploaded_at=doc.uploaded_at,
         )
@@ -147,6 +149,7 @@ async def update_conversation_endpoint(
         doc_info = DocumentInfo(
             id=doc.id,
             filename=doc.filename,
+            display_name=doc.display_name,
             page_count=doc.page_count,
             uploaded_at=doc.uploaded_at,
         )

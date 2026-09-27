@@ -142,6 +142,23 @@ async def get_document_for_conversation(
     return documents[0] if documents else None
 
 
+async def rename_document(
+    session: AsyncSession, document_id: str, display_name: str
+) -> Document | None:
+    """Update a document's user-facing `display_name`.
+
+    The underlying `filename` (the original upload name) is left untouched.
+    Returns None if no document with that id exists.
+    """
+    document = await get_document(session, document_id)
+    if document is None:
+        return None
+    document.display_name = display_name
+    await session.commit()
+    await session.refresh(document)
+    return document
+
+
 async def get_documents_for_conversation(
     session: AsyncSession, conversation_id: str
 ) -> list[Document]:

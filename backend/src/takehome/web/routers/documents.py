@@ -11,7 +11,12 @@ from starlette.responses import FileResponse
 
 from takehome.db.session import get_session
 from takehome.services.conversation import get_conversation
-from takehome.services.document import DocumentLimitExceededError, get_document, upload_document
+from takehome.services.document import (
+    DocumentLimitExceededError,
+    get_document,
+    rename_document,
+    upload_document,
+)
 
 logger = structlog.get_logger()
 
@@ -27,6 +32,21 @@ class DocumentOut(BaseModel):
     id: str
     conversation_id: str
     filename: str
+    page_count: int
+    uploaded_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DocumentRenameRequest(BaseModel):
+    display_name: str
+
+
+class DocumentRenameOut(BaseModel):
+    id: str
+    conversation_id: str
+    filename: str
+    display_name: str
     page_count: int
     uploaded_at: datetime
 
@@ -76,6 +96,36 @@ async def upload_document_endpoint(
         id=document.id,
         conversation_id=document.conversation_id,
         filename=document.filename,
+        page_count=document.page_count,
+        uploaded_at=document.uploaded_at,
+    )
+
+
+@router.patch("/api/documents/{document_id}", response_model=DocumentRenameOut)
+async def rename_document_endpoint(
+    document_id: str,
+    body: DocumentRenameRequest,
+    session: AsyncSession = Depends(get_session),
+) -> DocumentRenameOut:
+    """Rename a document's user-facing `display_name`.
+
+    The underlying `filename` (the original upload name) is left unchanged.
+    """
+    document = await rename_document(session, document_id, body.display_name)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    logger.info(
+        "Document renamed",
+        document_id=document.id,
+        display_name=document.display_name,
+    )
+
+    return DocumentRenameOut(
+        id=document.id,
+        conversation_id=document.conversation_id,
+        filename=document.filename,
+        display_name=document.display_name,
         page_count=document.page_count,
         uploaded_at=document.uploaded_at,
     )
