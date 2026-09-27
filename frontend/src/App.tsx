@@ -95,9 +95,7 @@ export default function App() {
 					documentError={documentError}
 				/>
 
-				{/* DocumentViewer still renders a single document; showing all
-				attached documents side-by-side (accordion) is tracked separately. */}
-				<DocumentViewer document={documents[0] ?? null} />
+				<DocumentViewer documents={documents} />
 			</div>
 		</TooltipProvider>
 	);

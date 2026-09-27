@@ -9,6 +9,7 @@ function makeDocument(overrides: Partial<Document> = {}): Document {
 		id: "doc-1",
 		conversation_id: "conv-1",
 		filename: "lease.pdf",
+		display_name: "lease.pdf",
 		page_count: 3,
 		uploaded_at: "2026-01-01T00:00:00Z",
 		...overrides,
