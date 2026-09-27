@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from takehome.db.models import Conversation
+from takehome.db.models import Conversation, DocumentType
 from takehome.db.session import get_session
 from takehome.services.conversation import (
     create_conversation,
@@ -40,6 +40,11 @@ class DocumentInfo(BaseModel):
     display_name: str
     page_count: int
     uploaded_at: datetime
+    # Classification driving the risk-review pipeline (Milestone 2), shown as
+    # an editable dropdown next to the rename pencil (see #33). `None` until
+    # auto-classification runs (or the user corrects it via PATCH
+    # /api/documents/{id}).
+    document_type: DocumentType | None = None
 
     model_config = {"from_attributes": True}
 

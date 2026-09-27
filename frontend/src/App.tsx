@@ -32,6 +32,7 @@ export default function App() {
 		documents,
 		upload,
 		rename,
+		updateDocumentType,
 		error: documentError,
 		refresh: refreshDocuments,
 	} = useDocuments(selectedId);
@@ -96,7 +97,11 @@ export default function App() {
 					documentError={documentError}
 				/>
 
-				<DocumentViewer documents={documents} onRename={rename} />
+				<DocumentViewer
+					documents={documents}
+					onRename={rename}
+					onDocumentTypeChange={updateDocumentType}
+				/>
 			</div>
 		</TooltipProvider>
 	);

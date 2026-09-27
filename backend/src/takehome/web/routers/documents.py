@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse
 
+from takehome.db.models import DocumentType
 from takehome.db.session import get_session
 from takehome.services.conversation import get_conversation
 from takehome.services.document import (
@@ -17,6 +18,7 @@ from takehome.services.document import (
     InvalidDisplayNameError,
     get_document,
     rename_document,
+    set_document_type,
     upload_document,
 )
 
@@ -37,12 +39,26 @@ class DocumentOut(BaseModel):
     display_name: str
     page_count: int
     uploaded_at: datetime
+    # Classification driving the risk-review pipeline (Milestone 2), shown as
+    # an editable dropdown next to the rename pencil (see #33). `None` until
+    # auto-classification runs (or the user corrects it via this same PATCH).
+    document_type: DocumentType | None = None
 
     model_config = {"from_attributes": True}
 
 
-class DocumentRenameRequest(BaseModel):
-    display_name: str
+class DocumentUpdateRequest(BaseModel):
+    """Partial update for a document's two user-editable fields.
+
+    Both are optional so the same endpoint serves both the rename pencil
+    (`display_name`, see #17) and the document_type dropdown (`document_type`,
+    see #33) -- each PATCH may correct either or both in one request, but at
+    least one must actually be provided (an empty body is rejected below
+    rather than silently no-oping).
+    """
+
+    display_name: str | None = None
+    document_type: DocumentType | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -103,35 +119,77 @@ async def upload_document_endpoint(
 
 
 @router.patch("/api/documents/{document_id}", response_model=DocumentOut)
-async def rename_document_endpoint(
+async def update_document_endpoint(
     document_id: str,
-    body: DocumentRenameRequest,
+    body: DocumentUpdateRequest,
     session: AsyncSession = Depends(get_session),
 ) -> DocumentOut:
-    """Rename a document's user-facing `display_name`.
+    """Correct a document's `display_name` and/or `document_type`.
 
-    The underlying `filename` (the original upload name) and the stored file
-    on disk are left unchanged. Returns 400 if `display_name` is empty or
-    blank, 404 if no document with that id exists.
+    Either field may be supplied on its own or both together; at least one
+    must be present or this returns 400 (`no_fields_to_update`). Renaming
+    leaves the underlying `filename` (the original upload name) and the
+    stored file on disk unchanged, and rejects an empty/blank
+    `display_name` with 400 (`invalid_display_name`). Returns 404
+    (`document_not_found`) if no document with that id exists.
     """
-    try:
-        document = await rename_document(session, document_id, body.display_name)
-    except InvalidDisplayNameError as e:
+    fields_set = body.model_fields_set
+    if "display_name" not in fields_set and "document_type" not in fields_set:
         raise HTTPException(
-            status_code=400, detail={"code": e.code, "message": str(e)}
-        ) from e
-
-    if document is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "document_not_found", "message": "Document not found"},
+            status_code=400,
+            detail={
+                "code": "no_fields_to_update",
+                "message": "At least one of display_name or document_type "
+                "must be provided.",
+            },
         )
 
-    logger.info(
-        "Document renamed",
-        document_id=document.id,
-        display_name=document.display_name,
-    )
+    document = None
+
+    if "display_name" in fields_set:
+        if body.display_name is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "invalid_display_name",
+                    "message": "display_name must not be empty or blank.",
+                },
+            )
+        try:
+            document = await rename_document(session, document_id, body.display_name)
+        except InvalidDisplayNameError as e:
+            raise HTTPException(
+                status_code=400, detail={"code": e.code, "message": str(e)}
+            ) from e
+        if document is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "document_not_found",
+                    "message": "Document not found",
+                },
+            )
+        logger.info(
+            "Document renamed",
+            document_id=document.id,
+            display_name=document.display_name,
+        )
+
+    if "document_type" in fields_set:
+        document = await set_document_type(session, document_id, body.document_type)
+        if document is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "document_not_found",
+                    "message": "Document not found",
+                },
+            )
+        logger.info(
+            "Document type updated",
+            document_id=document.id,
+            document_type=document.document_type,
+        )
 
     return DocumentOut.model_validate(document)
 

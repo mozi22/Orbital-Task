@@ -12,7 +12,7 @@ import { Document as PDFDocument, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import { getDocumentUrl } from "../lib/api";
-import type { Document } from "../types";
+import type { Document, DocumentType } from "../types";
 import { Button } from "./ui/button";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -23,6 +23,16 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 const MIN_WIDTH = 280;
 const MAX_WIDTH = 700;
 const DEFAULT_WIDTH = 400;
+
+// Mirrors the backend's `DocumentType` enum
+// (backend/src/takehome/db/models.py) -- the four values the risk-review
+// pipeline (Milestone 2) knows how to extract from.
+const DOCUMENT_TYPE_OPTIONS: { value: DocumentType; label: string }[] = [
+	{ value: "title", label: "Title" },
+	{ value: "lease", label: "Lease" },
+	{ value: "environmental", label: "Environmental" },
+	{ value: "other", label: "Other" },
+];
 
 interface DocumentViewerProps {
 	documents: Document[];
@@ -35,14 +45,85 @@ interface DocumentViewerProps {
 	 * losing their edit.
 	 */
 	onRename?: (documentId: string, displayName: string) => Promise<unknown>;
+	/**
+	 * Called when the document_type dropdown's selection changes (see #33).
+	 * Expected to call the same PATCH /api/documents/{id} endpoint (via the
+	 * useDocuments hook's `updateDocumentType`) and resolve on success;
+	 * rejecting reverts the dropdown to its previous value and surfaces the
+	 * error message so the user can retry.
+	 */
+	onDocumentTypeChange?: (
+		documentId: string,
+		documentType: DocumentType,
+	) => Promise<unknown>;
 }
 
 interface DocumentLabelProps {
 	document: Document;
 	onRename?: (documentId: string, displayName: string) => Promise<unknown>;
+	onDocumentTypeChange?: (
+		documentId: string,
+		documentType: DocumentType,
+	) => Promise<unknown>;
 }
 
-function DocumentLabel({ document, onRename }: DocumentLabelProps) {
+function DocumentTypeSelect({
+	document,
+	onDocumentTypeChange,
+}: {
+	document: Document;
+	onDocumentTypeChange?: (
+		documentId: string,
+		documentType: DocumentType,
+	) => Promise<unknown>;
+}) {
+	const [typeError, setTypeError] = useState<string | null>(null);
+
+	const handleChange = useCallback(
+		async (e: React.ChangeEvent<HTMLSelectElement>) => {
+			const value = e.target.value as DocumentType;
+			setTypeError(null);
+			if (!onDocumentTypeChange) return;
+			try {
+				await onDocumentTypeChange(document.id, value);
+			} catch (err) {
+				setTypeError(
+					err instanceof Error ? err.message : "Failed to update document type",
+				);
+			}
+		},
+		[document.id, onDocumentTypeChange],
+	);
+
+	return (
+		<div className="flex-shrink-0">
+			{/* biome-ignore lint/a11y/useKeyWithClickEvents: onClick here only stops a click inside the select from bubbling up to the accordion header's toggle trigger; it isn't a click-to-activate affordance needing a keyboard equivalent. */}
+			<select
+				aria-label="Document type"
+				value={document.document_type ?? ""}
+				onClick={(e) => e.stopPropagation()}
+				onChange={handleChange}
+				className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs text-neutral-600 focus:border-neutral-400 focus:outline-none"
+			>
+				<option value="" disabled>
+					Unclassified
+				</option>
+				{DOCUMENT_TYPE_OPTIONS.map((option) => (
+					<option key={option.value} value={option.value}>
+						{option.label}
+					</option>
+				))}
+			</select>
+			{typeError && <p className="mt-1 text-xs text-red-600">{typeError}</p>}
+		</div>
+	);
+}
+
+function DocumentLabel({
+	document,
+	onRename,
+	onDocumentTypeChange,
+}: DocumentLabelProps) {
 	const [editing, setEditing] = useState(false);
 	const [draftName, setDraftName] = useState(document.display_name);
 	const [saving, setSaving] = useState(false);
@@ -152,11 +233,19 @@ function DocumentLabel({ document, onRename }: DocumentLabelProps) {
 			>
 				<Pencil className="h-3.5 w-3.5 text-neutral-400" />
 			</Button>
+			<DocumentTypeSelect
+				document={document}
+				onDocumentTypeChange={onDocumentTypeChange}
+			/>
 		</div>
 	);
 }
 
-export function DocumentViewer({ documents, onRename }: DocumentViewerProps) {
+export function DocumentViewer({
+	documents,
+	onRename,
+	onDocumentTypeChange,
+}: DocumentViewerProps) {
 	const [width, setWidth] = useState(DEFAULT_WIDTH);
 	const [dragging, setDragging] = useState(false);
 	// Single-expand behavior (per the Milestone 1 PRD): at most one section
@@ -261,6 +350,7 @@ export function DocumentViewer({ documents, onRename }: DocumentViewerProps) {
 					onToggle={() => toggleSection(document.id)}
 					pdfPageWidth={pdfPageWidth}
 					onRename={onRename}
+					onDocumentTypeChange={onDocumentTypeChange}
 				/>
 			))}
 		</div>
@@ -274,6 +364,10 @@ interface DocumentAccordionSectionProps {
 	onToggle: () => void;
 	pdfPageWidth: number;
 	onRename?: (documentId: string, displayName: string) => Promise<unknown>;
+	onDocumentTypeChange?: (
+		documentId: string,
+		documentType: DocumentType,
+	) => Promise<unknown>;
 }
 
 function DocumentAccordionSection({
@@ -283,6 +377,7 @@ function DocumentAccordionSection({
 	onToggle,
 	pdfPageWidth,
 	onRename,
+	onDocumentTypeChange,
 }: DocumentAccordionSectionProps) {
 	const [numPages, setNumPages] = useState<number>(0);
 	const [currentPage, setCurrentPage] = useState(1);
@@ -312,7 +407,11 @@ function DocumentAccordionSection({
 			 */}
 			<div className="flex items-center justify-between gap-2 px-4 py-3 hover:bg-neutral-50">
 				<div className="min-w-0 flex-1">
-					<DocumentLabel document={document} onRename={onRename} />
+					<DocumentLabel
+						document={document}
+						onRename={onRename}
+						onDocumentTypeChange={onDocumentTypeChange}
+					/>
 					<p className="text-xs text-neutral-400">
 						{document.page_count} page
 						{document.page_count !== 1 ? "s" : ""}

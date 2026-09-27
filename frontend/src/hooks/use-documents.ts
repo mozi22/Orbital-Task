@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../lib/api";
-import type { Document } from "../types";
+import type { Document, DocumentType } from "../types";
 
 export function useDocuments(conversationId: string | null) {
 	const [documents, setDocuments] = useState<Document[]>([]);
@@ -71,12 +71,35 @@ export function useDocuments(conversationId: string | null) {
 		[],
 	);
 
+	const updateDocumentType = useCallback(
+		async (documentId: string, documentType: DocumentType) => {
+			try {
+				setError(null);
+				const updated = await api.updateDocumentType(documentId, documentType);
+				setDocuments((prev) =>
+					prev.map((doc) => (doc.id === documentId ? updated : doc)),
+				);
+				return updated;
+			} catch (err) {
+				const message =
+					err instanceof Error ? err.message : "Failed to update document type";
+				setError(message);
+				// Re-throw (rather than swallowing) so the dropdown can revert to
+				// the previous value and show the failure, matching `rename`'s
+				// error-handling shape above.
+				throw err instanceof Error ? err : new Error(message);
+			}
+		},
+		[],
+	);
+
 	return {
 		documents,
 		uploading,
 		error,
 		upload,
 		rename,
+		updateDocumentType,
 		refresh,
 	};
 }

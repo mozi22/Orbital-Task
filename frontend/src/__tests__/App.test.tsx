@@ -32,6 +32,7 @@ function makeDocuments(count: number): Document[] {
 		display_name: `doc-${i}.pdf`,
 		page_count: 1,
 		uploaded_at: "2026-01-01T00:00:00Z",
+		document_type: null,
 	}));
 }
 

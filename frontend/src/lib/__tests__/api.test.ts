@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, renameDocument, uploadDocument } from "../api";
+import {
+	ApiError,
+	renameDocument,
+	updateDocumentType,
+	uploadDocument,
+} from "../api";
 
 function jsonResponse(status: number, body: unknown): Response {
 	return new Response(JSON.stringify(body), {
@@ -124,5 +129,63 @@ describe("renameDocument", () => {
 			status: 400,
 		});
 		await expect(renameDocument("doc-1", "")).rejects.toBeInstanceOf(ApiError);
+	});
+});
+
+describe("updateDocumentType", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("PATCHes the document with the new document_type and returns the updated document", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				id: "doc-1",
+				conversation_id: "conv-1",
+				filename: "lease.pdf",
+				display_name: "lease.pdf",
+				page_count: 3,
+				uploaded_at: "2026-01-01T00:00:00Z",
+				document_type: "lease",
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await updateDocumentType("doc-1", "lease");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/documents/doc-1",
+			expect.objectContaining({
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ document_type: "lease" }),
+			}),
+		);
+		expect(result.document_type).toBe("lease");
+	});
+
+	it("throws an ApiError carrying the backend's code when the document doesn't exist", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				jsonResponse(404, {
+					detail: {
+						code: "document_not_found",
+						message: "Document not found",
+					},
+				}),
+			),
+		);
+
+		await expect(
+			updateDocumentType("does-not-exist", "lease"),
+		).rejects.toMatchObject({
+			code: "document_not_found",
+			message: "Document not found",
+			status: 404,
+		});
+		await expect(
+			updateDocumentType("does-not-exist", "lease"),
+		).rejects.toBeInstanceOf(ApiError);
 	});
 });

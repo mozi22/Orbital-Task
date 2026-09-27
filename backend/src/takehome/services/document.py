@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.config import settings
-from takehome.db.models import Document
+from takehome.db.models import Document, DocumentType
 from takehome.services.conversation import lock_conversation_for_update
 from takehome.services.llm import classify_document_type
 
@@ -208,6 +208,25 @@ async def rename_document(
     if document is None:
         return None
     document.display_name = display_name
+    await session.commit()
+    await session.refresh(document)
+    return document
+
+
+async def set_document_type(
+    session: AsyncSession, document_id: str, document_type: DocumentType | None
+) -> Document | None:
+    """Correct a document's `document_type` classification (see #33).
+
+    Used to fix an auto-classification once #32 exists, but stands alone
+    today: `document_type` is simply whatever was last written (NULL for
+    every upload until then). Passing `None` explicitly clears it back to
+    unclassified. Returns None if no document with that id exists.
+    """
+    document = await get_document(session, document_id)
+    if document is None:
+        return None
+    document.document_type = document_type
     await session.commit()
     await session.refresh(document)
     return document

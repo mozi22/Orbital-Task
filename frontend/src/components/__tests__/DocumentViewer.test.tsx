@@ -45,6 +45,7 @@ function makeDocument(overrides: Partial<Document> = {}): Document {
 		display_name: "Lease Agreement",
 		page_count: 3,
 		uploaded_at: "2026-01-01T00:00:00Z",
+		document_type: null,
 		...overrides,
 	};
 }
@@ -394,5 +395,146 @@ describe("DocumentViewer rename", () => {
 		expect(
 			screen.getByRole("button", { name: "Signed Lease" }),
 		).toBeInTheDocument();
+	});
+});
+
+describe("DocumentViewer document type dropdown", () => {
+	it("renders no dropdown when there are no documents", () => {
+		render(<DocumentViewer documents={[]} onDocumentTypeChange={vi.fn()} />);
+		expect(
+			screen.queryByRole("combobox", { name: /document type/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows an 'Unclassified' placeholder when document_type is null", () => {
+		const documents = [makeDocument({ document_type: null })];
+		render(
+			<DocumentViewer documents={documents} onDocumentTypeChange={vi.fn()} />,
+		);
+
+		const select = screen.getByRole("combobox", {
+			name: /document type/i,
+		}) as HTMLSelectElement;
+		expect(select.value).toBe("");
+		expect(screen.getByText("Unclassified")).toBeInTheDocument();
+	});
+
+	it("shows the auto-classified value by default", () => {
+		const documents = [makeDocument({ document_type: "lease" })];
+		render(
+			<DocumentViewer documents={documents} onDocumentTypeChange={vi.fn()} />,
+		);
+
+		const select = screen.getByRole("combobox", {
+			name: /document type/i,
+		}) as HTMLSelectElement;
+		expect(select.value).toBe("lease");
+	});
+
+	it("offers all four document types as options", () => {
+		const documents = [makeDocument({ document_type: null })];
+		render(
+			<DocumentViewer documents={documents} onDocumentTypeChange={vi.fn()} />,
+		);
+
+		const select = screen.getByRole("combobox", { name: /document type/i });
+		const optionLabels = Array.from(select.querySelectorAll("option")).map(
+			(o) => o.textContent,
+		);
+		expect(optionLabels).toEqual([
+			"Unclassified",
+			"Title",
+			"Lease",
+			"Environmental",
+			"Other",
+		]);
+	});
+
+	it("calls onDocumentTypeChange with the document id and new value when a new type is selected", async () => {
+		const documents = [makeDocument({ id: "doc-1", document_type: "other" })];
+		const onDocumentTypeChange = vi.fn().mockResolvedValue(undefined);
+		render(
+			<DocumentViewer
+				documents={documents}
+				onDocumentTypeChange={onDocumentTypeChange}
+			/>,
+		);
+
+		const select = screen.getByRole("combobox", { name: /document type/i });
+		fireEvent.change(select, { target: { value: "lease" } });
+
+		await waitFor(() =>
+			expect(onDocumentTypeChange).toHaveBeenCalledWith("doc-1", "lease"),
+		);
+	});
+
+	it("does not toggle the accordion section when changing the document type", () => {
+		const documents = [makeDocument({ document_type: "other" })];
+		render(
+			<DocumentViewer documents={documents} onDocumentTypeChange={vi.fn()} />,
+		);
+
+		const select = screen.getByRole("combobox", { name: /document type/i });
+		fireEvent.click(select);
+
+		expect(screen.queryByTestId("pdf-document")).not.toBeInTheDocument();
+	});
+
+	it("shows an error message when the update fails", async () => {
+		const documents = [makeDocument({ document_type: "other" })];
+		const onDocumentTypeChange = vi
+			.fn()
+			.mockRejectedValue(new Error("Update failed"));
+		render(
+			<DocumentViewer
+				documents={documents}
+				onDocumentTypeChange={onDocumentTypeChange}
+			/>,
+		);
+
+		const select = screen.getByRole("combobox", { name: /document type/i });
+		fireEvent.change(select, { target: { value: "lease" } });
+
+		await waitFor(() =>
+			expect(screen.getByText("Update failed")).toBeInTheDocument(),
+		);
+	});
+
+	it("reflects the new document_type after a reload (re-render with fresh document data)", async () => {
+		const documents = [makeDocument({ id: "doc-1", document_type: "other" })];
+		const onDocumentTypeChange = vi.fn().mockResolvedValue(undefined);
+		const { rerender } = render(
+			<DocumentViewer
+				documents={documents}
+				onDocumentTypeChange={onDocumentTypeChange}
+			/>,
+		);
+
+		const select = screen.getByRole("combobox", {
+			name: /document type/i,
+		}) as HTMLSelectElement;
+		fireEvent.change(select, { target: { value: "lease" } });
+		await waitFor(() =>
+			expect(onDocumentTypeChange).toHaveBeenCalledWith("doc-1", "lease"),
+		);
+
+		// Simulate the real flow: a successful update persists server-side, and
+		// a subsequent reload/refetch returns the document with the new
+		// document_type already set -- exactly what useDocuments.refresh()
+		// would produce after a page reload.
+		rerender(
+			<DocumentViewer
+				documents={[makeDocument({ id: "doc-1", document_type: "lease" })]}
+				onDocumentTypeChange={onDocumentTypeChange}
+			/>,
+		);
+
+		expect(
+			(
+				screen.getByRole("combobox", {
+					name: /document type/i,
+				}) as HTMLSelectElement
+			).value,
+		).toBe("lease");
 	});
 });
