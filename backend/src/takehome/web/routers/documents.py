@@ -57,15 +57,22 @@ async def upload_document_endpoint(
 
     Up to 5 documents per conversation are allowed. Returns 409 once the cap
     is reached, and 400 for wrong-file-type or oversized-file failures. Every
-    error response body carries a ``code`` field (``document_limit_exceeded``,
-    ``invalid_file_type``, or ``file_too_large``) in addition to a distinct
-    ``message``, so callers can tell the three failure reasons apart without
-    relying on status code or message text alone.
+    error response body — including the 404 for a missing conversation —
+    carries a ``code`` field (``conversation_not_found``,
+    ``document_limit_exceeded``, ``invalid_file_type``, or ``file_too_large``)
+    in addition to a distinct ``message``, so callers can tell the failure
+    reasons apart without relying on status code or message text alone.
     """
     # Verify the conversation exists
     conversation = await get_conversation(session, conversation_id)
     if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "conversation_not_found",
+                "message": "Conversation not found",
+            },
+        )
 
     try:
         document = await upload_document(session, conversation_id, file)

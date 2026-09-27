@@ -24,6 +24,11 @@ class DocumentUploadError(ValueError):
     Each subclass carries a distinct ``code`` so callers (the router, and
     ultimately batch-upload UX) can tell failure reasons apart programmatically
     instead of pattern-matching on the human-readable message.
+
+    This base class is never meant to be raised directly — only its
+    subclasses below (each with its own documented ``code``) should be
+    raised. The ``code`` here exists solely as a fallback default and is not
+    one of the documented, publicly-relied-upon codes.
     """
 
     code = "document_upload_error"

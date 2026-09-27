@@ -96,6 +96,20 @@ async def test_oversized_file_returns_400_with_file_too_large_code(
     assert "File too large" in detail["message"]
 
 
+async def test_missing_conversation_returns_404_with_conversation_not_found_code(
+    client: AsyncClient,
+) -> None:
+    field_name, file_tuple = _pdf_upload_tuple("doc.pdf")
+    resp = await client.post(
+        "/api/conversations/does-not-exist/documents",
+        files=[(field_name, file_tuple)],
+    )
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert detail["code"] == "conversation_not_found"
+    assert detail["message"] == "Conversation not found"
+
+
 async def test_all_three_error_cases_against_same_conversation_are_distinct(
     client: AsyncClient,
 ) -> None:
