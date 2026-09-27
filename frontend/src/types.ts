@@ -24,5 +24,5 @@ export interface Document {
 }
 
 export interface ConversationDetail extends Conversation {
-	document?: Document;
+	documents: Document[];
 }
