@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DocumentUpload } from "../DocumentUpload";
 
@@ -23,6 +29,12 @@ function dropFiles(target: Element, files: File[]) {
 describe("DocumentUpload", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		// This project's vite/vitest config runs with `globals: false`, so
+		// Testing Library's automatic afterEach-based cleanup never registers
+		// itself; without an explicit cleanup, DOM (and any role="alert" nodes)
+		// from one test leaks into the next and getByRole throws "found
+		// multiple elements".
+		cleanup();
 	});
 
 	it("marks the file input as accepting multiple files", () => {
@@ -45,7 +57,7 @@ describe("DocumentUpload", () => {
 		expect(uploadedNames.sort()).toEqual(["a.pdf", "b.pdf", "c.pdf"]);
 	});
 
-	it("ignores non-PDF files dropped alongside valid ones", async () => {
+	it("fails a non-PDF file independently with a distinct inline error, without blocking the valid PDF in the same batch", async () => {
 		const onUpload = vi.fn().mockResolvedValue(undefined);
 		const { container } = render(<DocumentUpload onUpload={onUpload} />);
 		const dropzone = container.querySelector("button") as HTMLElement;
@@ -53,10 +65,61 @@ describe("DocumentUpload", () => {
 
 		dropFiles(dropzone, [makePdf("a.pdf"), notPdf]);
 
+		// The valid PDF still succeeds...
 		await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(1));
 		expect(onUpload).toHaveBeenCalledWith(
 			expect.objectContaining({ name: "a.pdf" }),
 		);
+		// The invalid file is never sent to the upload endpoint at all...
+		expect(onUpload).not.toHaveBeenCalledWith(
+			expect.objectContaining({ name: "notes.txt" }),
+		);
+		// ...but it still surfaces a clear, distinct inline error naming it,
+		// instead of silently vanishing from the batch.
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("notes.txt"),
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent(/pdf/i);
+		expect(screen.getByRole("alert")).not.toHaveTextContent("a.pdf");
+	});
+
+	it("partial-accepts a batch of 2 valid PDFs + 1 .txt: both PDFs succeed and the .txt shows a distinct error", async () => {
+		const onUpload = vi.fn().mockResolvedValue(undefined);
+		const { container } = render(<DocumentUpload onUpload={onUpload} />);
+		const dropzone = container.querySelector("button") as HTMLElement;
+		const notPdf = new File(["hello"], "notes.txt", { type: "text/plain" });
+
+		dropFiles(dropzone, [makePdf("one.pdf"), makePdf("two.pdf"), notPdf]);
+
+		await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(2));
+		const uploadedNames = onUpload.mock.calls.map(
+			(call) => (call[0] as File).name,
+		);
+		expect(uploadedNames.sort()).toEqual(["one.pdf", "two.pdf"]);
+
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("notes.txt"),
+		);
+		expect(screen.getByRole("alert")).not.toHaveTextContent("one.pdf");
+		expect(screen.getByRole("alert")).not.toHaveTextContent("two.pdf");
+	});
+
+	it("shows a distinct inline error per invalid file when a batch is entirely invalid types", async () => {
+		const onUpload = vi.fn().mockResolvedValue(undefined);
+		const { container } = render(<DocumentUpload onUpload={onUpload} />);
+		const dropzone = container.querySelector("button") as HTMLElement;
+		const notPdfA = new File(["hello"], "one.txt", { type: "text/plain" });
+		const notPdfB = new File(["hello"], "two.docx", {
+			type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		});
+
+		dropFiles(dropzone, [notPdfA, notPdfB]);
+
+		expect(onUpload).not.toHaveBeenCalled();
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("one.txt"),
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("two.docx");
 	});
 
 	it("never runs more than 3 uploads concurrently for a larger batch", async () => {

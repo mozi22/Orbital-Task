@@ -53,11 +53,26 @@ export function DocumentUpload({
 
 	const processFiles = useCallback(
 		async (files: File[]) => {
+			if (files.length === 0) return;
+
+			// Wrong-type files fail independently right here, before ever
+			// touching the upload endpoint, with a clear per-file error — one
+			// bad file (e.g. a .txt dropped alongside PDFs) must never look
+			// like it silently vanished, and must never block the PDFs in the
+			// same batch from uploading.
 			const pdfFiles = files.filter(isPdf);
+			const invalidTypeErrors: FileUploadError[] = files
+				.filter((file) => !isPdf(file))
+				.map((file) => ({
+					fileName: file.name,
+					message: "Only PDF files are supported.",
+				}));
+
+			setUploadErrors(invalidTypeErrors);
+
 			if (pdfFiles.length === 0) return;
 
 			let completed = 0;
-			setUploadErrors([]);
 			setBatchProgress({ completed, total: pdfFiles.length });
 
 			const results = await runWithConcurrency(
@@ -78,13 +93,13 @@ export function DocumentUpload({
 			// Surface every failure visibly instead of letting it disappear —
 			// dropping a batch's worth of files must never look like every one
 			// of them silently succeeded.
-			const failures = results
+			const uploadFailures = results
 				.filter((result) => result.status === "rejected")
 				.map((result) => ({
 					fileName: result.item.name,
 					message: errorMessage(result.error),
 				}));
-			setUploadErrors(failures);
+			setUploadErrors([...invalidTypeErrors, ...uploadFailures]);
 
 			// Fire once for the whole batch, not once per file, so callers can
 			// reconcile state (e.g. refetch) a single deterministic time.
