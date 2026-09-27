@@ -32,6 +32,7 @@ class DocumentOut(BaseModel):
     id: str
     conversation_id: str
     filename: str
+    display_name: str
     page_count: int
     uploaded_at: datetime
 
@@ -40,17 +41,6 @@ class DocumentOut(BaseModel):
 
 class DocumentRenameRequest(BaseModel):
     display_name: str
-
-
-class DocumentRenameOut(BaseModel):
-    id: str
-    conversation_id: str
-    filename: str
-    display_name: str
-    page_count: int
-    uploaded_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 # --------------------------------------------------------------------------- #
@@ -92,21 +82,15 @@ async def upload_document_endpoint(
         filename=document.filename,
     )
 
-    return DocumentOut(
-        id=document.id,
-        conversation_id=document.conversation_id,
-        filename=document.filename,
-        page_count=document.page_count,
-        uploaded_at=document.uploaded_at,
-    )
+    return DocumentOut.model_validate(document)
 
 
-@router.patch("/api/documents/{document_id}", response_model=DocumentRenameOut)
+@router.patch("/api/documents/{document_id}", response_model=DocumentOut)
 async def rename_document_endpoint(
     document_id: str,
     body: DocumentRenameRequest,
     session: AsyncSession = Depends(get_session),
-) -> DocumentRenameOut:
+) -> DocumentOut:
     """Rename a document's user-facing `display_name`.
 
     The underlying `filename` (the original upload name) is left unchanged.
@@ -121,14 +105,7 @@ async def rename_document_endpoint(
         display_name=document.display_name,
     )
 
-    return DocumentRenameOut(
-        id=document.id,
-        conversation_id=document.conversation_id,
-        filename=document.filename,
-        display_name=document.display_name,
-        page_count=document.page_count,
-        uploaded_at=document.uploaded_at,
-    )
+    return DocumentOut.model_validate(document)
 
 
 @router.get("/api/documents/{document_id}/content")
