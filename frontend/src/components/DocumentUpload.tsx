@@ -1,13 +1,7 @@
 import { Loader2, Upload } from "lucide-react";
 import { type DragEvent, useCallback, useRef, useState } from "react";
-import { ApiError } from "../lib/api";
+import { ApiError, DOCUMENT_LIMIT_EXCEEDED_CODE } from "../lib/api";
 import { runWithConcurrency } from "../lib/concurrency";
-
-// The backend's DocumentLimitExceededError code (services/document.py),
-// raised once a conversation already has 5 documents. Checked by code
-// rather than message text so this stays correct even if the wording
-// changes.
-const DOCUMENT_LIMIT_EXCEEDED_CODE = "document_limit_exceeded";
 
 // Batch uploads go through the existing single-file endpoint, one call per
 // file, with at most this many in flight at once (limited concurrency, not

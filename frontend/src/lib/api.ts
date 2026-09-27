@@ -8,6 +8,16 @@ import type {
 const BASE = "/api";
 
 /**
+ * The backend's DocumentLimitExceededError code
+ * (backend/src/takehome/services/document.py), raised once a conversation
+ * already has 5 documents. Exported here — alongside `ApiError`, which owns
+ * what the backend's error envelope looks like — so callers can check
+ * `error.code === DOCUMENT_LIMIT_EXCEEDED_CODE` rather than re-declaring
+ * this string literal themselves or pattern-matching on message text.
+ */
+export const DOCUMENT_LIMIT_EXCEEDED_CODE = "document_limit_exceeded";
+
+/**
  * Thrown for any non-OK API response. Carries the HTTP `status` plus, when
  * the backend returned its structured `{"detail": {"code", "message"}}`
  * error shape (as `services/document.py`'s upload errors do), a `code` that
@@ -27,6 +37,16 @@ export class ApiError extends Error {
 	}
 }
 
+function isErrorDetail(
+	detail: unknown,
+): detail is { message: string; code?: string } {
+	return (
+		typeof detail === "object" &&
+		detail !== null &&
+		typeof (detail as { message?: unknown }).message === "string"
+	);
+}
+
 async function parseErrorBody(
 	response: Response,
 ): Promise<{ message: string; code?: string }> {
@@ -38,15 +58,10 @@ async function parseErrorBody(
 	try {
 		const body = JSON.parse(text) as { detail?: unknown };
 		const detail = body.detail;
-		if (
-			detail &&
-			typeof detail === "object" &&
-			"message" in detail &&
-			typeof (detail as { message: unknown }).message === "string"
-		) {
-			const code = (detail as { code?: unknown }).code;
+		if (isErrorDetail(detail)) {
+			const code = detail.code;
 			return {
-				message: (detail as { message: string }).message,
+				message: detail.message,
 				code: typeof code === "string" ? code : undefined,
 			};
 		}
