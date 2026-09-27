@@ -34,7 +34,20 @@ export function DocumentViewer({ documents }: DocumentViewerProps) {
 	// id) intentionally allows more than one section open at once for now —
 	// collapsing whichever section was previously open when a new one is
 	// expanded is single-expand behavior, tracked separately (issue #26).
+	// Unlimited simultaneous expansion is acceptable resource-wise here: the
+	// document cap (5 documents, see upload widget) bounds the worst case to
+	// 5 concurrently-mounted PDF viewers.
 	const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+	// Every section that has ever been expanded at least once. A section's
+	// PDF state (numPages/currentPage/pdfLoading/pdfError, held inside
+	// DocumentAccordionSection) must survive collapse/re-expand cycles, so
+	// once a section has been opened we keep its content force-mounted
+	// (hidden via CSS rather than unmounted) from then on. Sections that
+	// have never been opened stay lazily unmounted, so collapsed documents
+	// don't eagerly fetch PDFs no one has looked at yet.
+	const [everExpandedIds, setEverExpandedIds] = useState<Set<string>>(
+		new Set(),
+	);
 	const containerRef = useRef<HTMLDivElement>(null);
 
 	const handleMouseDown = useCallback(
@@ -73,6 +86,12 @@ export function DocumentViewer({ documents }: DocumentViewerProps) {
 				next.delete(documentId);
 			} else {
 				next.add(documentId);
+				setEverExpandedIds((everPrev) => {
+					if (everPrev.has(documentId)) return everPrev;
+					const nextEver = new Set(everPrev);
+					nextEver.add(documentId);
+					return nextEver;
+				});
 			}
 			return next;
 		});
@@ -111,6 +130,7 @@ export function DocumentViewer({ documents }: DocumentViewerProps) {
 					key={document.id}
 					document={document}
 					expanded={expandedIds.has(document.id)}
+					everExpanded={everExpandedIds.has(document.id)}
 					onToggle={() => toggleSection(document.id)}
 					pdfPageWidth={pdfPageWidth}
 				/>
@@ -122,6 +142,7 @@ export function DocumentViewer({ documents }: DocumentViewerProps) {
 interface DocumentAccordionSectionProps {
 	document: Document;
 	expanded: boolean;
+	everExpanded: boolean;
 	onToggle: () => void;
 	pdfPageWidth: number;
 }
@@ -129,6 +150,7 @@ interface DocumentAccordionSectionProps {
 function DocumentAccordionSection({
 	document,
 	expanded,
+	everExpanded,
 	onToggle,
 	pdfPageWidth,
 }: DocumentAccordionSectionProps) {
@@ -167,7 +189,22 @@ function DocumentAccordionSection({
 				</button>
 			</CollapsiblePrimitive.Trigger>
 
-			<CollapsiblePrimitive.Content>
+			{/*
+			 * Radix unmounts Collapsible.Content on collapse by default, which
+			 * would discard the PDF/page state below (numPages/currentPage/
+			 * pdfLoading/pdfError) and force a re-fetch + re-render from scratch
+			 * on re-expand — while the page-nav UI would briefly show the stale
+			 * currentPage/numPages from before ("Page 3 of 0"). Once a section
+			 * has been opened at least once (`everExpanded`), we force-mount it
+			 * from then on and hide it purely via CSS (`data-[state=closed]:
+			 * hidden`) so re-expanding never re-fetches. Sections that have
+			 * never been opened stay lazily unmounted so collapsed documents
+			 * don't eagerly fetch PDFs no one has looked at.
+			 */}
+			<CollapsiblePrimitive.Content
+				forceMount={everExpanded || undefined}
+				className="data-[state=closed]:hidden"
+			>
 				<div className="flex flex-col">
 					{/* PDF content */}
 					<div className="flex-1 overflow-y-auto p-4">
@@ -215,6 +252,7 @@ function DocumentAccordionSection({
 								variant="ghost"
 								size="icon"
 								className="h-7 w-7"
+								aria-label="Previous page"
 								disabled={currentPage <= 1}
 								onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
 							>
@@ -227,6 +265,7 @@ function DocumentAccordionSection({
 								variant="ghost"
 								size="icon"
 								className="h-7 w-7"
+								aria-label="Next page"
 								disabled={currentPage >= numPages}
 								onClick={() => setCurrentPage((p) => Math.min(numPages, p + 1))}
 							>
