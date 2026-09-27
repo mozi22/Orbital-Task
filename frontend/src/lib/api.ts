@@ -7,10 +7,83 @@ import type {
 
 const BASE = "/api";
 
+/**
+ * The backend's DocumentLimitExceededError code
+ * (backend/src/takehome/services/document.py), raised once a conversation
+ * already has 5 documents. Exported here — alongside `ApiError`, which owns
+ * what the backend's error envelope looks like — so callers can check
+ * `error.code === DOCUMENT_LIMIT_EXCEEDED_CODE` rather than re-declaring
+ * this string literal themselves or pattern-matching on message text.
+ */
+export const DOCUMENT_LIMIT_EXCEEDED_CODE = "document_limit_exceeded";
+
+/**
+ * Thrown for any non-OK API response. Carries the HTTP `status` plus, when
+ * the backend returned its structured `{"detail": {"code", "message"}}`
+ * error shape (as `services/document.py`'s upload errors do), a `code` that
+ * lets callers tell failure reasons apart programmatically (e.g.
+ * "document_limit_exceeded" vs. any other upload failure) instead of
+ * pattern-matching on message text.
+ */
+export class ApiError extends Error {
+	readonly status: number;
+	readonly code: string | undefined;
+
+	constructor(status: number, message: string, code?: string) {
+		super(message);
+		this.name = "ApiError";
+		this.status = status;
+		this.code = code;
+	}
+}
+
+function isErrorDetail(
+	detail: unknown,
+): detail is { message: string; code?: string } {
+	return (
+		typeof detail === "object" &&
+		detail !== null &&
+		typeof (detail as { message?: unknown }).message === "string"
+	);
+}
+
+async function parseErrorBody(
+	response: Response,
+): Promise<{ message: string; code?: string }> {
+	const text = await response.text().catch(() => "");
+	if (!text) {
+		return { message: `API error ${response.status}` };
+	}
+
+	try {
+		const body = JSON.parse(text) as { detail?: unknown };
+		const detail = body.detail;
+		if (isErrorDetail(detail)) {
+			const code = detail.code;
+			return {
+				message: detail.message,
+				code: typeof code === "string" ? code : undefined,
+			};
+		}
+		if (typeof detail === "string") {
+			return { message: detail };
+		}
+	} catch {
+		// Not JSON (or not the expected shape) — fall back to the raw text
+		// below rather than losing the error entirely.
+	}
+
+	return { message: text };
+}
+
+async function throwApiError(response: Response): Promise<never> {
+	const { message, code } = await parseErrorBody(response);
+	throw new ApiError(response.status, message, code);
+}
+
 async function handleResponse<T>(response: Response): Promise<T> {
 	if (!response.ok) {
-		const text = await response.text().catch(() => "Unknown error");
-		throw new Error(`API error ${response.status}: ${text}`);
+		await throwApiError(response);
 	}
 	return response.json() as Promise<T>;
 }
@@ -34,8 +107,7 @@ export async function deleteConversation(id: string): Promise<void> {
 		method: "DELETE",
 	});
 	if (!res.ok) {
-		const text = await res.text().catch(() => "Unknown error");
-		throw new Error(`API error ${res.status}: ${text}`);
+		await throwApiError(res);
 	}
 }
 
@@ -63,8 +135,7 @@ export async function sendMessage(
 		body: JSON.stringify({ content }),
 	});
 	if (!res.ok) {
-		const text = await res.text().catch(() => "Unknown error");
-		throw new Error(`API error ${res.status}: ${text}`);
+		await throwApiError(res);
 	}
 	return res;
 }
