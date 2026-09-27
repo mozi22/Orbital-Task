@@ -12,8 +12,12 @@ async def create_conversation(session: AsyncSession) -> Conversation:
     conversation = Conversation()
     session.add(conversation)
     await session.commit()
-    await session.refresh(conversation)
-    return conversation
+    # Re-fetch with `documents` eagerly loaded rather than `session.refresh`,
+    # which would leave the (expired) relationship to lazy-load on first
+    # access — not awaitable outside of an explicit async context.
+    refreshed = await get_conversation(session, conversation.id)
+    assert refreshed is not None
+    return refreshed
 
 
 async def list_conversations(session: AsyncSession) -> list[Conversation]:
@@ -47,8 +51,12 @@ async def update_conversation(
         return None
     conversation.title = title
     await session.commit()
-    await session.refresh(conversation)
-    return conversation
+    # As in `create_conversation`, re-fetch with `documents` eagerly loaded
+    # rather than `session.refresh`, which would expire it and force an
+    # un-awaitable lazy load on next access.
+    refreshed = await get_conversation(session, conversation_id)
+    assert refreshed is not None
+    return refreshed
 
 
 async def delete_conversation(session: AsyncSession, conversation_id: str) -> bool:
