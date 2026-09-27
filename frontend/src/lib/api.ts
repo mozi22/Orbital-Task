@@ -18,6 +18,15 @@ const BASE = "/api";
 export const DOCUMENT_LIMIT_EXCEEDED_CODE = "document_limit_exceeded";
 
 /**
+ * Mirrors `MAX_DOCUMENTS_PER_CONVERSATION`
+ * (backend/src/takehome/services/document.py) — the frontend never enforces
+ * this on its own, but needs the same number to render "N/5 documents
+ * attached" and disable the upload control once a conversation is at cap,
+ * without waiting for a round trip to find out it was rejected.
+ */
+export const MAX_DOCUMENTS_PER_CONVERSATION = 5;
+
+/**
  * Thrown for any non-OK API response. Carries the HTTP `status` plus, when
  * the backend returned its structured `{"detail": {"code", "message"}}`
  * error shape (as `services/document.py`'s upload errors do), a `code` that
