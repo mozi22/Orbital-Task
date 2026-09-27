@@ -4,7 +4,7 @@ import { ChatWindow } from "./components/ChatWindow";
 import { DocumentViewer } from "./components/DocumentViewer";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { useConversations } from "./hooks/use-conversations";
-import { useDocument } from "./hooks/use-document";
+import { useDocuments } from "./hooks/use-documents";
 import { useMessages } from "./hooks/use-messages";
 
 export default function App() {
@@ -28,11 +28,11 @@ export default function App() {
 	} = useMessages(selectedId);
 
 	const {
-		document,
+		documents,
 		upload,
 		error: documentError,
-		refresh: refreshDocument,
-	} = useDocument(selectedId);
+		refresh: refreshDocuments,
+	} = useDocuments(selectedId);
 
 	const handleSend = useCallback(
 		async (content: string) => {
@@ -55,13 +55,13 @@ export default function App() {
 	// Reconcile document/conversation state exactly once per upload action —
 	// once for a single ChatInput upload, once for an entire drag/drop batch —
 	// rather than once per file. Refetching here (instead of trusting
-	// whichever concurrent upload's `setDocument` call happened to resolve
-	// last) also keeps the final document state deterministic regardless of
+	// whichever concurrent upload's `setDocuments` call happened to resolve
+	// last) also keeps the final documents state deterministic regardless of
 	// how a batch's uploads interleaved.
 	const handleUploadSettled = useCallback(() => {
-		refreshDocument();
+		refreshDocuments();
 		refreshConversations();
-	}, [refreshDocument, refreshConversations]);
+	}, [refreshDocuments, refreshConversations]);
 
 	const handleCreate = useCallback(async () => {
 		await create();
@@ -85,7 +85,7 @@ export default function App() {
 					error={messagesError}
 					streaming={streaming}
 					streamingContent={streamingContent}
-					hasDocument={!!document}
+					hasDocument={documents.length > 0}
 					conversationId={selectedId}
 					onSend={handleSend}
 					onUpload={handleUpload}
@@ -93,7 +93,9 @@ export default function App() {
 					documentError={documentError}
 				/>
 
-				<DocumentViewer document={document} />
+				{/* DocumentViewer still renders a single document; showing all
+				attached documents side-by-side (accordion) is tracked separately. */}
+				<DocumentViewer document={documents[0] ?? null} />
 			</div>
 		</TooltipProvider>
 	);
