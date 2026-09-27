@@ -37,6 +37,7 @@ class ConversationListItem(BaseModel):
 class DocumentInfo(BaseModel):
     id: str
     filename: str
+    display_name: str
     page_count: int
     uploaded_at: datetime
 
@@ -64,15 +65,7 @@ class ConversationUpdate(BaseModel):
 
 def _build_conversation_detail(conversation: Conversation) -> ConversationDetail:
     """Build a ConversationDetail from a Conversation with its documents loaded."""
-    documents = [
-        DocumentInfo(
-            id=doc.id,
-            filename=doc.filename,
-            page_count=doc.page_count,
-            uploaded_at=doc.uploaded_at,
-        )
-        for doc in conversation.documents
-    ]
+    documents = [DocumentInfo.model_validate(doc) for doc in conversation.documents]
     return ConversationDetail(
         id=conversation.id,
         title=conversation.title,

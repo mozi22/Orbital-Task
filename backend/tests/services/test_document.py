@@ -17,6 +17,7 @@ from takehome.services.document import (
     FileTooLargeError,
     InvalidFileTypeError,
     get_documents_for_conversation,
+    rename_document,
     upload_document,
 )
 from tests.conftest import TestSessionLocal, read_sample_pdf_bytes
@@ -141,6 +142,27 @@ async def test_upload_document_guard_counts_documents_not_existence(
 
     docs = await get_documents_for_conversation(session, conversation.id)
     assert len(docs) == 4
+
+
+async def test_rename_document_updates_display_name_and_leaves_filename(
+    session: AsyncSession,
+) -> None:
+    conversation = await create_conversation(session)
+    document = await upload_document(session, conversation.id, _make_upload_file("lease.pdf"))
+
+    renamed = await rename_document(session, document.id, "Lease Agreement")
+
+    assert renamed is not None
+    assert renamed.display_name == "Lease Agreement"
+    assert renamed.filename == "lease.pdf"
+
+
+async def test_rename_document_returns_none_for_missing_document(
+    session: AsyncSession,
+) -> None:
+    result = await rename_document(session, "does-not-exist", "New Name")
+
+    assert result is None
 
 
 async def test_concurrent_uploads_at_cap_cannot_exceed_the_limit(

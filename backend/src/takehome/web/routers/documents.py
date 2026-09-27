@@ -15,6 +15,7 @@ from takehome.services.document import (
     DocumentLimitExceededError,
     DocumentUploadError,
     get_document,
+    rename_document,
     upload_document,
 )
 
@@ -32,10 +33,15 @@ class DocumentOut(BaseModel):
     id: str
     conversation_id: str
     filename: str
+    display_name: str
     page_count: int
     uploaded_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class DocumentRenameRequest(BaseModel):
+    display_name: str
 
 
 # --------------------------------------------------------------------------- #
@@ -92,13 +98,33 @@ async def upload_document_endpoint(
         filename=document.filename,
     )
 
-    return DocumentOut(
-        id=document.id,
-        conversation_id=document.conversation_id,
-        filename=document.filename,
-        page_count=document.page_count,
-        uploaded_at=document.uploaded_at,
+    return DocumentOut.model_validate(document)
+
+
+@router.patch("/api/documents/{document_id}", response_model=DocumentOut)
+async def rename_document_endpoint(
+    document_id: str,
+    body: DocumentRenameRequest,
+    session: AsyncSession = Depends(get_session),
+) -> DocumentOut:
+    """Rename a document's user-facing `display_name`.
+
+    The underlying `filename` (the original upload name) is left unchanged.
+    """
+    document = await rename_document(session, document_id, body.display_name)
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "document_not_found", "message": "Document not found"},
+        )
+
+    logger.info(
+        "Document renamed",
+        document_id=document.id,
+        display_name=document.display_name,
     )
+
+    return DocumentOut.model_validate(document)
 
 
 @router.get("/api/documents/{document_id}/content")
