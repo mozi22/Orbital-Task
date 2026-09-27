@@ -112,7 +112,7 @@ describe("DocumentViewer", () => {
 		expect(screen.getAllByTestId("pdf-document")).toHaveLength(1);
 	});
 
-	it("allows two sections to be expanded simultaneously (multi-expand, Set-based)", () => {
+	it("collapses the previously-open section when a different section is expanded (single-expand)", () => {
 		const documents = [
 			makeDocument({ id: "doc-1", display_name: "Lease Agreement" }),
 			makeDocument({ id: "doc-2", display_name: "Title Report" }),
@@ -122,11 +122,85 @@ describe("DocumentViewer", () => {
 		render(<DocumentViewer documents={documents} />);
 
 		fireEvent.click(screen.getByRole("button", { name: /lease agreement/i }));
+		expect(
+			screen
+				.getByRole("button", { name: /lease agreement/i })
+				.closest("div[data-state]"),
+		).toHaveAttribute("data-state", "open");
+
 		fireEvent.click(screen.getByRole("button", { name: /title report/i }));
 
-		// Both expanded sections render their own PDF viewer at once; the
-		// third, never-expanded section stays unmounted.
-		expect(screen.getAllByTestId("pdf-document")).toHaveLength(2);
+		// The newly-opened section is open; the previously-open section was
+		// collapsed, not left open alongside it (Environmental Report, never
+		// clicked, stays collapsed throughout).
+		expect(
+			screen
+				.getByRole("button", { name: /title report/i })
+				.closest("div[data-state]"),
+		).toHaveAttribute("data-state", "open");
+		expect(
+			screen
+				.getByRole("button", { name: /lease agreement/i })
+				.closest("div[data-state]"),
+		).toHaveAttribute("data-state", "closed");
+		expect(
+			screen
+				.getByRole("button", { name: /environmental report/i })
+				.closest("div[data-state]"),
+		).toHaveAttribute("data-state", "closed");
+	});
+
+	it("renders the newly-opened document's own content, not the previous section's", () => {
+		const documents = [
+			makeDocument({ id: "doc-1", display_name: "Lease Agreement" }),
+			makeDocument({ id: "doc-2", display_name: "Title Report" }),
+		];
+
+		render(<DocumentViewer documents={documents} />);
+
+		fireEvent.click(screen.getByRole("button", { name: /lease agreement/i }));
+		fireEvent.click(screen.getByRole("button", { name: /title report/i }));
+
+		// The Title Report section's content is visible...
+		const titleSection = screen
+			.getByRole("button", { name: /title report/i })
+			.closest("div[data-state]") as HTMLElement | null;
+		expect(titleSection).not.toBeNull();
+		expect(titleSection).toHaveAttribute("data-state", "open");
+
+		// ...while the Lease Agreement section is collapsed.
+		const leaseSection = screen
+			.getByRole("button", { name: /lease agreement/i })
+			.closest("div[data-state]") as HTMLElement | null;
+		expect(leaseSection).not.toBeNull();
+		expect(leaseSection).toHaveAttribute("data-state", "closed");
+	});
+
+	it("re-expanding a previously-opened, now-collapsed section still renders that document's own content", () => {
+		const documents = [
+			makeDocument({ id: "doc-1", display_name: "Lease Agreement" }),
+			makeDocument({ id: "doc-2", display_name: "Title Report" }),
+		];
+
+		render(<DocumentViewer documents={documents} />);
+
+		// Open Lease, then Title (collapsing Lease), then Lease again
+		// (collapsing Title). Lease was force-mounted from its first open, so
+		// this exercises that its own PDF content is still correctly shown
+		// on re-expand rather than showing stale/wrong content.
+		fireEvent.click(screen.getByRole("button", { name: /lease agreement/i }));
+		fireEvent.click(screen.getByRole("button", { name: /title report/i }));
+		fireEvent.click(screen.getByRole("button", { name: /lease agreement/i }));
+
+		const leaseSection = screen
+			.getByRole("button", { name: /lease agreement/i })
+			.closest("div[data-state]") as HTMLElement | null;
+		expect(leaseSection).toHaveAttribute("data-state", "open");
+
+		const titleSection = screen
+			.getByRole("button", { name: /title report/i })
+			.closest("div[data-state]") as HTMLElement | null;
+		expect(titleSection).toHaveAttribute("data-state", "closed");
 	});
 
 	it("keeps page-nav state consistent across a collapse/re-expand cycle instead of resetting mid-transition", () => {
