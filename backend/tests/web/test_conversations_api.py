@@ -51,6 +51,28 @@ async def test_get_conversation_with_two_documents_returns_both_in_documents_arr
     assert body["has_document"] is True
 
 
+async def test_get_conversation_document_display_name_defaults_to_filename(
+    client: AsyncClient,
+) -> None:
+    create_resp = await client.post("/api/conversations")
+    conversation_id = create_resp.json()["id"]
+
+    field_name, file_tuple = _pdf_upload_tuple("lease-agreement.pdf")
+    upload_resp = await client.post(
+        f"/api/conversations/{conversation_id}/documents",
+        files=[(field_name, file_tuple)],
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    document_id = upload_resp.json()["id"]
+
+    get_resp = await client.get(f"/api/conversations/{conversation_id}")
+    assert get_resp.status_code == 200
+    body = get_resp.json()
+
+    documents_by_id = {doc["id"]: doc for doc in body["documents"]}
+    assert documents_by_id[document_id]["display_name"] == "lease-agreement.pdf"
+
+
 async def test_create_conversation_response_has_no_document_field(client: AsyncClient) -> None:
     create_resp = await client.post("/api/conversations")
     assert create_resp.status_code == 201
