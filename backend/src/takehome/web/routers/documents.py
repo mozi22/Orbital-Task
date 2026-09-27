@@ -113,7 +113,10 @@ async def rename_document_endpoint(
     """
     document = await rename_document(session, document_id, body.display_name)
     if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "document_not_found", "message": "Document not found"},
+        )
 
     logger.info(
         "Document renamed",

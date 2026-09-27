@@ -56,3 +56,6 @@ async def test_patch_nonexistent_document_returns_404(client: AsyncClient) -> No
     )
 
     assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert detail["code"] == "document_not_found"
+    assert detail["message"] == "Document not found"
