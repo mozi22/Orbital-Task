@@ -2,11 +2,16 @@ import { FileSearch } from "lucide-react";
 import { DocumentUpload } from "./DocumentUpload";
 
 interface EmptyStateProps {
-	onUpload: (file: File) => void;
+	onUpload: (file: File) => void | Promise<void>;
+	onBatchSettled?: () => void;
 	uploading?: boolean;
 }
 
-export function EmptyState({ onUpload, uploading }: EmptyStateProps) {
+export function EmptyState({
+	onUpload,
+	onBatchSettled,
+	uploading,
+}: EmptyStateProps) {
 	return (
 		<div className="flex flex-col items-center px-4">
 			<div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-neutral-900">
@@ -19,7 +24,11 @@ export function EmptyState({ onUpload, uploading }: EmptyStateProps) {
 				Ask questions about leases, title reports, contracts, and other legal
 				documents
 			</p>
-			<DocumentUpload onUpload={onUpload} uploading={uploading} />
+			<DocumentUpload
+				onUpload={onUpload}
+				onBatchSettled={onBatchSettled}
+				uploading={uploading}
+			/>
 		</div>
 	);
 }
