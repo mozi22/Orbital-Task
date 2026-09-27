@@ -9,24 +9,33 @@ interface ChatWindowProps {
 	messages: Message[];
 	loading: boolean;
 	error: string | null;
+	documentError?: string | null;
 	streaming: boolean;
 	streamingContent: string;
 	hasDocument: boolean;
 	conversationId: string | null;
 	onSend: (content: string) => void;
-	onUpload: (file: File) => void;
+	onUpload: (file: File) => void | Promise<void>;
+	/**
+	 * Called exactly once per user-initiated upload action once it fully
+	 * settles — once for a single attach-button upload, and once for an
+	 * entire drag/drop batch, never once per file within a batch.
+	 */
+	onUploadSettled?: () => void;
 }
 
 export function ChatWindow({
 	messages,
 	loading,
 	error,
+	documentError,
 	streaming,
 	streamingContent,
 	hasDocument,
 	conversationId,
 	onSend,
 	onUpload,
+	onUploadSettled,
 }: ChatWindowProps) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -65,6 +74,11 @@ export function ChatWindow({
 	if (messages.length === 0 && !streaming) {
 		return (
 			<div className="flex flex-1 flex-col bg-white">
+				{documentError && (
+					<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
+						{documentError}
+					</div>
+				)}
 				<div className="flex flex-1 items-center justify-center">
 					{hasDocument ? (
 						<div className="text-center">
@@ -73,12 +87,13 @@ export function ChatWindow({
 							</p>
 						</div>
 					) : (
-						<EmptyState onUpload={onUpload} />
+						<EmptyState onUpload={onUpload} onBatchSettled={onUploadSettled} />
 					)}
 				</div>
 				<ChatInput
 					onSend={onSend}
 					onUpload={onUpload}
+					onUploadSettled={onUploadSettled}
 					disabled={streaming}
 					hasDocument={hasDocument}
 				/>
@@ -91,6 +106,11 @@ export function ChatWindow({
 			{error && (
 				<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
 					{error}
+				</div>
+			)}
+			{documentError && (
+				<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
+					{documentError}
 				</div>
 			)}
 
@@ -106,6 +126,7 @@ export function ChatWindow({
 			<ChatInput
 				onSend={onSend}
 				onUpload={onUpload}
+				onUploadSettled={onUploadSettled}
 				disabled={streaming}
 				hasDocument={hasDocument}
 			/>

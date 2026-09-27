@@ -11,7 +11,7 @@ from starlette.responses import FileResponse
 
 from takehome.db.session import get_session
 from takehome.services.conversation import get_conversation
-from takehome.services.document import get_document, upload_document
+from takehome.services.document import DocumentLimitExceededError, get_document, upload_document
 
 logger = structlog.get_logger()
 
@@ -50,8 +50,8 @@ async def upload_document_endpoint(
 ) -> DocumentOut:
     """Upload a PDF document for a conversation.
 
-    Only one document per conversation is allowed. Returns 409 if a document
-    already exists.
+    Up to 5 documents per conversation are allowed. Returns 409 once the cap
+    is reached.
     """
     # Verify the conversation exists
     conversation = await get_conversation(session, conversation_id)
@@ -60,11 +60,10 @@ async def upload_document_endpoint(
 
     try:
         document = await upload_document(session, conversation_id, file)
+    except DocumentLimitExceededError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
-        error_message = str(e)
-        if "already has a document" in error_message:
-            raise HTTPException(status_code=409, detail=error_message)
-        raise HTTPException(status_code=400, detail=error_message)
+        raise HTTPException(status_code=400, detail=str(e))
 
     logger.info(
         "Document uploaded",

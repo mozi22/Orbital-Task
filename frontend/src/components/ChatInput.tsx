@@ -5,7 +5,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 interface ChatInputProps {
 	onSend: (content: string) => void;
-	onUpload: (file: File) => void;
+	onUpload: (file: File) => void | Promise<void>;
+	onUploadSettled?: () => void;
 	disabled: boolean;
 	hasDocument: boolean;
 }
@@ -13,6 +14,7 @@ interface ChatInputProps {
 export function ChatInput({
 	onSend,
 	onUpload,
+	onUploadSettled,
 	disabled,
 	hasDocument,
 }: ChatInputProps) {
@@ -51,14 +53,21 @@ export function ChatInput({
 		(e: React.ChangeEvent<HTMLInputElement>) => {
 			const file = e.target.files?.[0];
 			if (file) {
-				onUpload(file);
+				// onUpload may reject on failure; the caller (App) is responsible
+				// for surfacing that failure via visible error state, so it's
+				// safe (and necessary, to avoid an unhandled rejection) to just
+				// swallow the rejection here. onUploadSettled still fires either
+				// way so the caller can reconcile state once the attempt is done.
+				Promise.resolve(onUpload(file))
+					.catch(() => {})
+					.finally(() => onUploadSettled?.());
 			}
 			// Reset the input so the same file can be selected again
 			if (fileInputRef.current) {
 				fileInputRef.current.value = "";
 			}
 		},
-		[onUpload],
+		[onUpload, onUploadSettled],
 	);
 
 	return (

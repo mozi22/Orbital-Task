@@ -35,10 +35,13 @@ export function useDocument(conversationId: string | null) {
 				setDocument(doc);
 				return doc;
 			} catch (err) {
-				setError(
-					err instanceof Error ? err.message : "Failed to upload document",
-				);
-				return null;
+				const message =
+					err instanceof Error ? err.message : "Failed to upload document";
+				setError(message);
+				// Re-throw (rather than swallowing and returning null) so batch
+				// callers can tell success from failure per file and surface it,
+				// instead of the failure disappearing silently.
+				throw err instanceof Error ? err : new Error(message);
 			} finally {
 				setUploading(false);
 			}
