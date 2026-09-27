@@ -52,6 +52,17 @@ class FileTooLargeError(DocumentUploadError):
     code = "file_too_large"
 
 
+class InvalidDisplayNameError(ValueError):
+    """Raised when a rename request's `display_name` is empty or blank.
+
+    Carries a ``code`` for the same reason as `DocumentUploadError`'s
+    subclasses: so the router can surface a distinct, programmatically
+    checkable failure reason instead of pattern-matching message text.
+    """
+
+    code = "invalid_display_name"
+
+
 async def upload_document(
     session: AsyncSession, conversation_id: str, file: UploadFile
 ) -> Document:
@@ -179,9 +190,15 @@ async def rename_document(
 ) -> Document | None:
     """Update a document's user-facing `display_name`.
 
-    The underlying `filename` (the original upload name) is left untouched.
-    Returns None if no document with that id exists.
+    The underlying `filename` (the original upload name) and the file on disk
+    are left untouched — only the `display_name` column is written.
+
+    Raises InvalidDisplayNameError if `display_name` is empty or made up
+    entirely of whitespace. Returns None if no document with that id exists.
     """
+    if not display_name.strip():
+        raise InvalidDisplayNameError("display_name must not be empty or blank.")
+
     document = await get_document(session, document_id)
     if document is None:
         return None
