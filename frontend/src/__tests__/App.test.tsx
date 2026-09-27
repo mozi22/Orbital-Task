@@ -29,6 +29,7 @@ function makeDocuments(count: number): Document[] {
 		id: `doc-${i}`,
 		conversation_id: "conv-1",
 		filename: `doc-${i}.pdf`,
+		display_name: `doc-${i}.pdf`,
 		page_count: 1,
 		uploaded_at: "2026-01-01T00:00:00Z",
 	}));

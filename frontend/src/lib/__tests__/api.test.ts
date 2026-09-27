@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, uploadDocument } from "../api";
+import { ApiError, renameDocument, uploadDocument } from "../api";
 
 function jsonResponse(status: number, body: unknown): Response {
 	return new Response(JSON.stringify(body), {
@@ -71,5 +71,58 @@ describe("uploadDocument error handling", () => {
 			message: "Internal Server Error",
 			status: 500,
 		});
+	});
+});
+
+describe("renameDocument", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("PATCHes the document with the new display_name and returns the updated document", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				id: "doc-1",
+				conversation_id: "conv-1",
+				filename: "lease.pdf",
+				display_name: "Signed Lease",
+				page_count: 3,
+				uploaded_at: "2026-01-01T00:00:00Z",
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await renameDocument("doc-1", "Signed Lease");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/documents/doc-1",
+			expect.objectContaining({
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ display_name: "Signed Lease" }),
+			}),
+		);
+		expect(result.display_name).toBe("Signed Lease");
+	});
+
+	it("throws an ApiError carrying the backend's code on an invalid display name", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				jsonResponse(400, {
+					detail: {
+						code: "invalid_display_name",
+						message: "display_name must not be empty or blank.",
+					},
+				}),
+			),
+		);
+
+		await expect(renameDocument("doc-1", "")).rejects.toMatchObject({
+			code: "invalid_display_name",
+			message: "display_name must not be empty or blank.",
+			status: 400,
+		});
+		await expect(renameDocument("doc-1", "")).rejects.toBeInstanceOf(ApiError);
 	});
 });

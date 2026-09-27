@@ -121,4 +121,47 @@ describe("useDocuments", () => {
 			expect(result.current.error).toBe("409: document limit exceeded"),
 		);
 	});
+
+	it("updates the matching document in place when a rename succeeds", async () => {
+		const original = makeDocument({ id: "doc-1", display_name: "lease.pdf" });
+		const other = makeDocument({ id: "doc-2", display_name: "title.pdf" });
+		vi.spyOn(api, "fetchConversation").mockResolvedValue(
+			makeConversationDetail([original, other]),
+		);
+		const renamed = { ...original, display_name: "Signed Lease" };
+		vi.spyOn(api, "renameDocument").mockResolvedValue(renamed);
+
+		const { result } = renderHook(() => useDocuments("conv-1"));
+		await waitFor(() => expect(result.current.documents).toHaveLength(2));
+
+		await result.current.rename("doc-1", "Signed Lease");
+
+		await waitFor(() =>
+			expect(result.current.documents).toEqual([renamed, other]),
+		);
+		expect(api.renameDocument).toHaveBeenCalledWith("doc-1", "Signed Lease");
+	});
+
+	it("re-throws and surfaces rename errors without mutating existing documents", async () => {
+		const original = makeDocument({ id: "doc-1", display_name: "lease.pdf" });
+		vi.spyOn(api, "fetchConversation").mockResolvedValue(
+			makeConversationDetail([original]),
+		);
+		vi.spyOn(api, "renameDocument").mockRejectedValue(
+			new Error("400: display_name must not be empty or blank."),
+		);
+
+		const { result } = renderHook(() => useDocuments("conv-1"));
+		await waitFor(() => expect(result.current.documents).toHaveLength(1));
+
+		await expect(result.current.rename("doc-1", "")).rejects.toThrow(
+			"400: display_name must not be empty or blank.",
+		);
+		await waitFor(() =>
+			expect(result.current.error).toBe(
+				"400: display_name must not be empty or blank.",
+			),
+		);
+		expect(result.current.documents).toEqual([original]);
+	});
 });

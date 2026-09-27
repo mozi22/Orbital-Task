@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Document } from "../../types";
@@ -63,17 +69,15 @@ describe("DocumentViewer", () => {
 
 		render(<DocumentViewer documents={documents} />);
 
-		const headers = screen.getAllByRole("button", { name: /.+/ });
-		expect(headers).toHaveLength(3);
-		expect(
-			screen.getByRole("button", { name: /lease agreement/i }),
-		).toBeInTheDocument();
-		expect(
-			screen.getByRole("button", { name: /title report/i }),
-		).toBeInTheDocument();
-		expect(
-			screen.getByRole("button", { name: /environmental report/i }),
-		).toBeInTheDocument();
+		// The expand/collapse trigger's accessible name is set explicitly to
+		// each document's display_name (see DocumentViewer.tsx), so querying
+		// by exact name finds exactly one trigger per document — distinct
+		// from the "Rename document" pencil button that also lives in each
+		// header, asserted separately below.
+		const toggleButtons = documents.map((doc) =>
+			screen.getByRole("button", { name: doc.display_name }),
+		);
+		expect(toggleButtons).toHaveLength(3);
 	});
 
 	it("labels sections by display_name rather than the underlying filename", () => {
@@ -87,9 +91,7 @@ describe("DocumentViewer", () => {
 
 		render(<DocumentViewer documents={documents} />);
 
-		expect(
-			screen.getByRole("button", { name: /friendly name/i }),
-		).toBeInTheDocument();
+		expect(screen.getByText("Friendly Name")).toBeInTheDocument();
 		expect(screen.queryByText("raw-upload-name.pdf")).not.toBeInTheDocument();
 	});
 
@@ -161,5 +163,121 @@ describe("DocumentViewer", () => {
 		expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
 		expect(screen.queryByText(/page \d+ of 0/i)).not.toBeInTheDocument();
 		expect(screen.getAllByTestId("pdf-document")).toHaveLength(1);
+	});
+});
+
+describe("DocumentViewer rename", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		cleanup();
+	});
+
+	it("renders nothing rename-related when there are no documents", () => {
+		render(<DocumentViewer documents={[]} onRename={vi.fn()} />);
+		expect(
+			screen.queryByRole("button", { name: /rename document/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows the document's display_name as the label, not its raw filename", () => {
+		const documents = [
+			makeDocument({
+				filename: "raw-upload-name.pdf",
+				display_name: "Signed Lease",
+			}),
+		];
+		render(<DocumentViewer documents={documents} onRename={vi.fn()} />);
+		expect(screen.getByText("Signed Lease")).toBeInTheDocument();
+		expect(screen.queryByText("raw-upload-name.pdf")).not.toBeInTheDocument();
+	});
+
+	it("opens inline edit mode with the current display_name pre-filled when the pencil icon is clicked", () => {
+		const documents = [makeDocument({ display_name: "Signed Lease" })];
+		render(<DocumentViewer documents={documents} onRename={vi.fn()} />);
+
+		fireEvent.click(screen.getByRole("button", { name: /rename document/i }));
+
+		const input = screen.getByRole("textbox", {
+			name: /document name/i,
+		}) as HTMLInputElement;
+		expect(input.value).toBe("Signed Lease");
+	});
+
+	it("calls onRename with the document id and trimmed new name on submit, then exits edit mode", async () => {
+		const documents = [
+			makeDocument({ id: "doc-1", display_name: "lease.pdf" }),
+		];
+		const onRename = vi.fn().mockResolvedValue(undefined);
+		render(<DocumentViewer documents={documents} onRename={onRename} />);
+
+		fireEvent.click(screen.getByRole("button", { name: /rename document/i }));
+		const input = screen.getByRole("textbox", { name: /document name/i });
+		fireEvent.change(input, { target: { value: "  Signed Lease  " } });
+		fireEvent.submit(input.closest("form") as HTMLFormElement);
+
+		await waitFor(() =>
+			expect(onRename).toHaveBeenCalledWith("doc-1", "Signed Lease"),
+		);
+		await waitFor(() =>
+			expect(
+				screen.queryByRole("textbox", { name: /document name/i }),
+			).not.toBeInTheDocument(),
+		);
+	});
+
+	it("does not submit a blank or whitespace-only name", () => {
+		const documents = [makeDocument({ display_name: "lease.pdf" })];
+		const onRename = vi.fn();
+		render(<DocumentViewer documents={documents} onRename={onRename} />);
+
+		fireEvent.click(screen.getByRole("button", { name: /rename document/i }));
+		const input = screen.getByRole("textbox", { name: /document name/i });
+		fireEvent.change(input, { target: { value: "   " } });
+		fireEvent.submit(input.closest("form") as HTMLFormElement);
+
+		expect(onRename).not.toHaveBeenCalled();
+		expect(screen.getByText(/name cannot be empty/i)).toBeInTheDocument();
+	});
+
+	it("cancels editing without calling onRename when Escape is pressed", () => {
+		const documents = [makeDocument({ display_name: "lease.pdf" })];
+		const onRename = vi.fn();
+		render(<DocumentViewer documents={documents} onRename={onRename} />);
+
+		fireEvent.click(screen.getByRole("button", { name: /rename document/i }));
+		const input = screen.getByRole("textbox", { name: /document name/i });
+		fireEvent.change(input, { target: { value: "Something else" } });
+		fireEvent.keyDown(input, { key: "Escape" });
+
+		expect(onRename).not.toHaveBeenCalled();
+		expect(screen.getByText("lease.pdf")).toBeInTheDocument();
+	});
+
+	it("shows an error and stays in edit mode when the rename request fails", async () => {
+		const documents = [makeDocument({ display_name: "lease.pdf" })];
+		const onRename = vi.fn().mockRejectedValue(new Error("Rename failed"));
+		render(<DocumentViewer documents={documents} onRename={onRename} />);
+
+		fireEvent.click(screen.getByRole("button", { name: /rename document/i }));
+		const input = screen.getByRole("textbox", { name: /document name/i });
+		fireEvent.change(input, { target: { value: "New Name" } });
+		fireEvent.submit(input.closest("form") as HTMLFormElement);
+
+		await waitFor(() =>
+			expect(screen.getByText("Rename failed")).toBeInTheDocument(),
+		);
+		expect(
+			screen.getByRole("textbox", { name: /document name/i }),
+		).toBeInTheDocument();
+	});
+
+	it("does not toggle the accordion section when clicking the pencil to start renaming", () => {
+		const documents = [makeDocument({ display_name: "Lease Agreement" })];
+		render(<DocumentViewer documents={documents} onRename={vi.fn()} />);
+
+		fireEvent.click(screen.getByRole("button", { name: /rename document/i }));
+
+		// The section must still be collapsed: no PDF content is mounted.
+		expect(screen.queryByTestId("pdf-document")).not.toBeInTheDocument();
 	});
 });

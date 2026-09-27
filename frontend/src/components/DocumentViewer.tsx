@@ -5,8 +5,9 @@ import {
 	ChevronRight,
 	FileText,
 	Loader2,
+	Pencil,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Document as PDFDocument, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -25,9 +26,137 @@ const DEFAULT_WIDTH = 400;
 
 interface DocumentViewerProps {
 	documents: Document[];
+	/**
+	 * Called when a section's pencil-edit rename form is submitted with a
+	 * non-blank new name. Expected to call the PATCH /api/documents/{id}
+	 * endpoint (via the useDocuments hook's `rename`) and resolve on
+	 * success; rejecting keeps that section's inline editor open and
+	 * surfaces the error message so the user can retry instead of silently
+	 * losing their edit.
+	 */
+	onRename?: (documentId: string, displayName: string) => Promise<unknown>;
 }
 
-export function DocumentViewer({ documents }: DocumentViewerProps) {
+interface DocumentLabelProps {
+	document: Document;
+	onRename?: (documentId: string, displayName: string) => Promise<unknown>;
+}
+
+function DocumentLabel({ document, onRename }: DocumentLabelProps) {
+	const [editing, setEditing] = useState(false);
+	const [draftName, setDraftName] = useState(document.display_name);
+	const [saving, setSaving] = useState(false);
+	const [renameError, setRenameError] = useState<string | null>(null);
+	const inputRef = useRef<HTMLInputElement>(null);
+
+	// Focus the rename input the moment editing starts, without relying on
+	// the (lint-disallowed) autoFocus attribute.
+	useEffect(() => {
+		if (editing) {
+			inputRef.current?.focus();
+		}
+	}, [editing]);
+
+	const startEditing = useCallback(
+		(e: React.MouseEvent) => {
+			// The pencil button sits inside the same header row as the
+			// accordion's expand/collapse trigger; stop the click from
+			// bubbling so opening the rename editor never also toggles the
+			// section.
+			e.stopPropagation();
+			setDraftName(document.display_name);
+			setRenameError(null);
+			setEditing(true);
+		},
+		[document.display_name],
+	);
+
+	const cancelEditing = useCallback(() => {
+		setEditing(false);
+		setRenameError(null);
+	}, []);
+
+	const handleSubmit = useCallback(
+		async (e: React.FormEvent) => {
+			e.preventDefault();
+			const trimmed = draftName.trim();
+			if (!trimmed) {
+				setRenameError("Name cannot be empty.");
+				return;
+			}
+			if (!onRename) {
+				setEditing(false);
+				return;
+			}
+			try {
+				setSaving(true);
+				setRenameError(null);
+				await onRename(document.id, trimmed);
+				setEditing(false);
+			} catch (err) {
+				setRenameError(
+					err instanceof Error ? err.message : "Failed to rename document",
+				);
+			} finally {
+				setSaving(false);
+			}
+		},
+		[draftName, document.id, onRename],
+	);
+
+	const handleKeyDown = useCallback(
+		(e: React.KeyboardEvent<HTMLInputElement>) => {
+			if (e.key === "Escape") {
+				e.preventDefault();
+				cancelEditing();
+			}
+		},
+		[cancelEditing],
+	);
+
+	if (editing) {
+		return (
+			// biome-ignore lint/a11y/useKeyWithClickEvents: onClick here only stops a click inside the form from bubbling up to the accordion header's toggle trigger; it isn't a click-to-activate affordance needing a keyboard equivalent.
+			<form
+				onSubmit={handleSubmit}
+				onClick={(e) => e.stopPropagation()}
+				className="min-w-0 flex-1"
+			>
+				<input
+					ref={inputRef}
+					aria-label="Document name"
+					value={draftName}
+					disabled={saving}
+					onChange={(e) => setDraftName(e.target.value)}
+					onKeyDown={handleKeyDown}
+					className="w-full rounded border border-neutral-300 px-1.5 py-0.5 text-sm font-medium text-neutral-800 focus:border-neutral-400 focus:outline-none"
+				/>
+				{renameError && (
+					<p className="mt-1 text-xs text-red-600">{renameError}</p>
+				)}
+			</form>
+		);
+	}
+
+	return (
+		<div className="flex min-w-0 items-center gap-1.5">
+			<p className="truncate text-sm font-medium text-neutral-800">
+				{document.display_name}
+			</p>
+			<Button
+				variant="ghost"
+				size="icon"
+				className="h-6 w-6 flex-shrink-0"
+				aria-label="Rename document"
+				onClick={startEditing}
+			>
+				<Pencil className="h-3.5 w-3.5 text-neutral-400" />
+			</Button>
+		</div>
+	);
+}
+
+export function DocumentViewer({ documents, onRename }: DocumentViewerProps) {
 	const [width, setWidth] = useState(DEFAULT_WIDTH);
 	const [dragging, setDragging] = useState(false);
 	// Which sections are currently expanded. A `Set` (rather than a single
@@ -133,6 +262,7 @@ export function DocumentViewer({ documents }: DocumentViewerProps) {
 					everExpanded={everExpandedIds.has(document.id)}
 					onToggle={() => toggleSection(document.id)}
 					pdfPageWidth={pdfPageWidth}
+					onRename={onRename}
 				/>
 			))}
 		</div>
@@ -145,6 +275,7 @@ interface DocumentAccordionSectionProps {
 	everExpanded: boolean;
 	onToggle: () => void;
 	pdfPageWidth: number;
+	onRename?: (documentId: string, displayName: string) => Promise<unknown>;
 }
 
 function DocumentAccordionSection({
@@ -153,6 +284,7 @@ function DocumentAccordionSection({
 	everExpanded,
 	onToggle,
 	pdfPageWidth,
+	onRename,
 }: DocumentAccordionSectionProps) {
 	const [numPages, setNumPages] = useState<number>(0);
 	const [currentPage, setCurrentPage] = useState(1);
@@ -167,27 +299,41 @@ function DocumentAccordionSection({
 			onOpenChange={onToggle}
 			className="border-b border-neutral-100"
 		>
-			<CollapsiblePrimitive.Trigger asChild>
-				<button
-					type="button"
-					className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left hover:bg-neutral-50"
-				>
-					<div className="min-w-0">
-						<p className="truncate text-sm font-medium text-neutral-800">
-							{document.display_name}
-						</p>
-						<p className="text-xs text-neutral-400">
-							{document.page_count} page
-							{document.page_count !== 1 ? "s" : ""}
-						</p>
-					</div>
-					<ChevronDown
-						className={`h-4 w-4 flex-shrink-0 text-neutral-400 transition-transform ${
-							expanded ? "rotate-180" : ""
-						}`}
-					/>
-				</button>
-			</CollapsiblePrimitive.Trigger>
+			{/*
+			 * The rename label (with its own pencil button/inline-edit form)
+			 * and the accordion's expand/collapse trigger are kept as
+			 * siblings, not nested, so the pencil button is never an
+			 * interactive element inside another interactive element:
+			 * nesting a <button> (or the rename <input>) inside the trigger
+			 * <button> would be invalid HTML, and a click on the pencil
+			 * would bubble up and also toggle the section. The trigger's
+			 * accessible name is set explicitly to the document's
+			 * display_name (via aria-label) so it stays identifiable by name
+			 * even though the visible display_name text now lives in the
+			 * sibling DocumentLabel instead of inside the trigger itself.
+			 */}
+			<div className="flex items-center justify-between gap-2 px-4 py-3 hover:bg-neutral-50">
+				<div className="min-w-0 flex-1">
+					<DocumentLabel document={document} onRename={onRename} />
+					<p className="text-xs text-neutral-400">
+						{document.page_count} page
+						{document.page_count !== 1 ? "s" : ""}
+					</p>
+				</div>
+				<CollapsiblePrimitive.Trigger asChild>
+					<button
+						type="button"
+						aria-label={document.display_name}
+						className="flex-shrink-0 p-1"
+					>
+						<ChevronDown
+							className={`h-4 w-4 text-neutral-400 transition-transform ${
+								expanded ? "rotate-180" : ""
+							}`}
+						/>
+					</button>
+				</CollapsiblePrimitive.Trigger>
+			</div>
 
 			{/*
 			 * Radix unmounts Collapsible.Content on collapse by default, which

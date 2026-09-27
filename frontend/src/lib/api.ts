@@ -162,6 +162,18 @@ export async function uploadDocument(
 	return handleResponse<Document>(res);
 }
 
+export async function renameDocument(
+	documentId: string,
+	displayName: string,
+): Promise<Document> {
+	const res = await fetch(`${BASE}/documents/${documentId}`, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ display_name: displayName }),
+	});
+	return handleResponse<Document>(res);
+}
+
 export function getDocumentUrl(documentId: string): string {
 	return `${BASE}/documents/${documentId}/content`;
 }
