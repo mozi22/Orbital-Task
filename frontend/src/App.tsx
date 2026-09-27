@@ -30,6 +30,7 @@ export default function App() {
 	const {
 		documents,
 		upload,
+		rename,
 		error: documentError,
 		refresh: refreshDocuments,
 	} = useDocuments(selectedId);
@@ -95,7 +96,7 @@ export default function App() {
 
 				{/* DocumentViewer still renders a single document; showing all
 				attached documents side-by-side (accordion) is tracked separately. */}
-				<DocumentViewer document={documents[0] ?? null} />
+				<DocumentViewer document={documents[0] ?? null} onRename={rename} />
 			</div>
 		</TooltipProvider>
 	);

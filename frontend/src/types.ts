@@ -19,6 +19,7 @@ export interface Document {
 	id: string;
 	conversation_id: string;
 	filename: string;
+	display_name: string;
 	page_count: number;
 	uploaded_at: string;
 }

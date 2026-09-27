@@ -49,11 +49,34 @@ export function useDocuments(conversationId: string | null) {
 		[conversationId],
 	);
 
+	const rename = useCallback(
+		async (documentId: string, displayName: string) => {
+			try {
+				setError(null);
+				const updated = await api.renameDocument(documentId, displayName);
+				setDocuments((prev) =>
+					prev.map((doc) => (doc.id === documentId ? updated : doc)),
+				);
+				return updated;
+			} catch (err) {
+				const message =
+					err instanceof Error ? err.message : "Failed to rename document";
+				setError(message);
+				// Re-throw (rather than swallowing) so the caller (the inline rename
+				// UI) can keep editing open and show the failure, instead of it
+				// silently reverting to the old name with no explanation.
+				throw err instanceof Error ? err : new Error(message);
+			}
+		},
+		[],
+	);
+
 	return {
 		documents,
 		uploading,
 		error,
 		upload,
+		rename,
 		refresh,
 	};
 }

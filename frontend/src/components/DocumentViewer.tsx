@@ -1,5 +1,11 @@
-import { ChevronLeft, ChevronRight, FileText, Loader2 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import {
+	ChevronLeft,
+	ChevronRight,
+	FileText,
+	Loader2,
+	Pencil,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Document as PDFDocument, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -18,9 +24,123 @@ const DEFAULT_WIDTH = 400;
 
 interface DocumentViewerProps {
 	document: Document | null;
+	/**
+	 * Called when the pencil-edit rename form is submitted with a non-blank
+	 * new name. Expected to call the PATCH /api/documents/{id} endpoint (via
+	 * the useDocuments hook's `rename`) and resolve on success; rejecting
+	 * keeps the inline editor open and surfaces the error message so the
+	 * user can retry instead of silently losing their edit.
+	 */
+	onRename?: (documentId: string, displayName: string) => Promise<unknown>;
 }
 
-export function DocumentViewer({ document }: DocumentViewerProps) {
+interface DocumentLabelProps {
+	document: Document;
+	onRename?: (documentId: string, displayName: string) => Promise<unknown>;
+}
+
+function DocumentLabel({ document, onRename }: DocumentLabelProps) {
+	const [editing, setEditing] = useState(false);
+	const [draftName, setDraftName] = useState(document.display_name);
+	const [saving, setSaving] = useState(false);
+	const [renameError, setRenameError] = useState<string | null>(null);
+	const inputRef = useRef<HTMLInputElement>(null);
+
+	// Focus the rename input the moment editing starts, without relying on
+	// the (lint-disallowed) autoFocus attribute.
+	useEffect(() => {
+		if (editing) {
+			inputRef.current?.focus();
+		}
+	}, [editing]);
+
+	const startEditing = useCallback(() => {
+		setDraftName(document.display_name);
+		setRenameError(null);
+		setEditing(true);
+	}, [document.display_name]);
+
+	const cancelEditing = useCallback(() => {
+		setEditing(false);
+		setRenameError(null);
+	}, []);
+
+	const handleSubmit = useCallback(
+		async (e: React.FormEvent) => {
+			e.preventDefault();
+			const trimmed = draftName.trim();
+			if (!trimmed) {
+				setRenameError("Name cannot be empty.");
+				return;
+			}
+			if (!onRename) {
+				setEditing(false);
+				return;
+			}
+			try {
+				setSaving(true);
+				setRenameError(null);
+				await onRename(document.id, trimmed);
+				setEditing(false);
+			} catch (err) {
+				setRenameError(
+					err instanceof Error ? err.message : "Failed to rename document",
+				);
+			} finally {
+				setSaving(false);
+			}
+		},
+		[draftName, document.id, onRename],
+	);
+
+	const handleKeyDown = useCallback(
+		(e: React.KeyboardEvent<HTMLInputElement>) => {
+			if (e.key === "Escape") {
+				e.preventDefault();
+				cancelEditing();
+			}
+		},
+		[cancelEditing],
+	);
+
+	if (editing) {
+		return (
+			<form onSubmit={handleSubmit} className="min-w-0 flex-1">
+				<input
+					ref={inputRef}
+					aria-label="Document name"
+					value={draftName}
+					disabled={saving}
+					onChange={(e) => setDraftName(e.target.value)}
+					onKeyDown={handleKeyDown}
+					className="w-full rounded border border-neutral-300 px-1.5 py-0.5 text-sm font-medium text-neutral-800 focus:border-neutral-400 focus:outline-none"
+				/>
+				{renameError && (
+					<p className="mt-1 text-xs text-red-600">{renameError}</p>
+				)}
+			</form>
+		);
+	}
+
+	return (
+		<div className="flex min-w-0 items-center gap-1.5">
+			<p className="truncate text-sm font-medium text-neutral-800">
+				{document.display_name}
+			</p>
+			<Button
+				variant="ghost"
+				size="icon"
+				className="h-6 w-6 flex-shrink-0"
+				aria-label="Rename document"
+				onClick={startEditing}
+			>
+				<Pencil className="h-3.5 w-3.5 text-neutral-400" />
+			</Button>
+		</div>
+	);
+}
+
+export function DocumentViewer({ document, onRename }: DocumentViewerProps) {
 	const [numPages, setNumPages] = useState<number>(0);
 	const [currentPage, setCurrentPage] = useState(1);
 	const [pdfLoading, setPdfLoading] = useState(true);
@@ -90,10 +210,8 @@ export function DocumentViewer({ document }: DocumentViewerProps) {
 
 			{/* Header */}
 			<div className="flex items-center justify-between border-b border-neutral-100 px-4 py-3">
-				<div className="min-w-0">
-					<p className="truncate text-sm font-medium text-neutral-800">
-						{document.filename}
-					</p>
+				<div className="min-w-0 flex-1">
+					<DocumentLabel document={document} onRename={onRename} />
 					<p className="text-xs text-neutral-400">
 						{document.page_count} page{document.page_count !== 1 ? "s" : ""}
 					</p>
