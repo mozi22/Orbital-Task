@@ -4,10 +4,17 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from pydantic_ai import capture_run_messages
-from pydantic_ai.messages import ModelMessage, UserPromptPart
-from pydantic_ai.models.function import AgentInfo
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, UserPromptPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from takehome.services.llm import DocumentContext, agent, chat_with_documents
+from takehome.db.models import DocumentType
+from takehome.services.llm import (
+    DocumentContext,
+    agent,
+    chat_with_documents,
+    classification_agent,
+    classify_document_type,
+)
 
 
 def _user_prompt_text(messages: list[ModelMessage]) -> str:
@@ -135,3 +142,81 @@ async def test_conversation_history_and_user_message_are_still_included_alongsid
     assert "First question" in prompt
     assert "First answer" in prompt
     assert "Follow-up question" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# classify_document_type (issue #32)
+# --------------------------------------------------------------------------- #
+
+
+def _stub_classification(document_type: DocumentType):
+    """Build a `FunctionModel` function that always returns `document_type`
+    as the structured output, mirroring the real classification agent's
+    `output_type=DocumentType` tool-call contract."""
+
+    def _fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        tool = info.output_tools[0]
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=tool.name, args={"response": document_type.value})]
+        )
+
+    return _fn
+
+
+@pytest.mark.parametrize(
+    "document_type",
+    [DocumentType.TITLE, DocumentType.LEASE, DocumentType.ENVIRONMENTAL, DocumentType.OTHER],
+)
+async def test_classify_document_type_returns_the_llms_classification(
+    document_type: DocumentType,
+) -> None:
+    with classification_agent.override(model=FunctionModel(_stub_classification(document_type))):
+        result = await classify_document_type("Some extracted document text.")
+
+    assert result == document_type
+
+
+async def test_classify_document_type_sends_the_documents_text_to_the_model() -> None:
+    with (
+        classification_agent.override(
+            model=FunctionModel(_stub_classification(DocumentType.LEASE))
+        ),
+        capture_run_messages() as messages,
+    ):
+        await classify_document_type("LEASE-MARKER: rent is $500/month.")
+
+    prompt = _user_prompt_text(messages)
+    assert "LEASE-MARKER: rent is $500/month." in prompt
+
+
+async def test_classify_document_type_defaults_to_other_for_empty_text() -> None:
+    """No text (e.g. extraction failed) must not call the LLM at all -- it
+    should default straight to OTHER."""
+    with classification_agent.override(
+        model=FunctionModel(_stub_classification(DocumentType.TITLE))
+    ):
+        result = await classify_document_type("")
+
+    assert result == DocumentType.OTHER
+
+
+async def test_classify_document_type_defaults_to_other_for_none_text() -> None:
+    with classification_agent.override(
+        model=FunctionModel(_stub_classification(DocumentType.TITLE))
+    ):
+        result = await classify_document_type(None)
+
+    assert result == DocumentType.OTHER
+
+
+async def test_classify_document_type_defaults_to_other_when_the_llm_call_fails() -> None:
+    """A transient LLM failure must not block the upload -- it should
+    default to OTHER rather than propagating the error."""
+
+    def _raise(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("simulated LLM failure")
+
+    with classification_agent.override(model=FunctionModel(_raise)):
+        result = await classify_document_type("Some extracted document text.")
+
+    assert result == DocumentType.OTHER

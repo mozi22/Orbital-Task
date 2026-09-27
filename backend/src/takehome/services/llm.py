@@ -4,9 +4,13 @@ import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import structlog
 from pydantic_ai import Agent
 
 from takehome.config import settings  # noqa: F401 — triggers ANTHROPIC_API_KEY export
+from takehome.db.models import DocumentType
+
+logger = structlog.get_logger()
 
 agent = Agent(
     "anthropic:claude-haiku-4-5-20251001",
@@ -21,6 +25,55 @@ agent = Agent(
         "- When you reference specific content, mention the section, clause, or page."
     ),
 )
+
+# A distinct Agent (rather than reusing `agent` above) so its structured
+# `output_type=DocumentType` is scoped only to classification calls -- the
+# chat agent above must keep streaming free-text answers.
+classification_agent = Agent(
+    "anthropic:claude-haiku-4-5-20251001",
+    output_type=DocumentType,
+    system_prompt=(
+        "You classify commercial real estate due-diligence documents for a "
+        "law firm. Given the extracted text of an uploaded document, decide "
+        "which single category it belongs to:\n\n"
+        "- title: title reports, title deeds, land registry entries, "
+        "ownership/encumbrance records.\n"
+        "- lease: lease agreements, tenancy agreements, rent schedules.\n"
+        "- environmental: environmental assessments, site surveys, "
+        "contamination reports.\n"
+        "- other: anything that doesn't clearly fit the above.\n\n"
+        "Respond with exactly one of those four categories."
+    ),
+)
+
+# Cap how much extracted text is sent to the classification call -- a
+# document's first couple of pages are enough to tell its type apart, and
+# this keeps prompt size (and cost) bounded regardless of document length.
+_CLASSIFICATION_TEXT_LIMIT = 12_000
+
+
+async def classify_document_type(text: str | None) -> DocumentType:
+    """Classify a document's extracted text into a `DocumentType`.
+
+    Used at upload time (see `services/document.py`) so every uploaded
+    document gets a sensible default `document_type` a solicitor can
+    correct later, rather than requiring manual tagging on every upload.
+
+    Falls back to `DocumentType.OTHER` if there's no text to classify (e.g.
+    text extraction failed) or if the classification call itself fails --
+    a transient LLM error should never block a document upload from
+    succeeding.
+    """
+    if not text or not text.strip():
+        return DocumentType.OTHER
+
+    truncated = text[:_CLASSIFICATION_TEXT_LIMIT]
+    try:
+        result = await classification_agent.run(f"Classify the following document:\n\n{truncated}")
+    except Exception:
+        logger.exception("Document classification call failed, defaulting to OTHER")
+        return DocumentType.OTHER
+    return result.output
 
 
 def _escape_for_xml_attribute(value: str) -> str:
