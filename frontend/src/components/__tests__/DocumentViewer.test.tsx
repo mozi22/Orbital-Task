@@ -49,12 +49,12 @@ function makeDocument(overrides: Partial<Document> = {}): Document {
 	};
 }
 
-describe("DocumentViewer", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-		cleanup();
-	});
+afterEach(() => {
+	vi.restoreAllMocks();
+	cleanup();
+});
 
+describe("DocumentViewer", () => {
 	it("shows an empty state when there are no documents", () => {
 		render(<DocumentViewer documents={[]} />);
 		expect(screen.getByText(/no document uploaded/i)).toBeInTheDocument();
@@ -167,11 +167,6 @@ describe("DocumentViewer", () => {
 });
 
 describe("DocumentViewer rename", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-		cleanup();
-	});
-
 	it("renders nothing rename-related when there are no documents", () => {
 		render(<DocumentViewer documents={[]} onRename={vi.fn()} />);
 		expect(
@@ -279,5 +274,51 @@ describe("DocumentViewer rename", () => {
 
 		// The section must still be collapsed: no PDF content is mounted.
 		expect(screen.queryByTestId("pdf-document")).not.toBeInTheDocument();
+	});
+
+	it("updates the header label immediately after a successful rename, without collapsing an already-expanded section", async () => {
+		const documents = [
+			makeDocument({ id: "doc-1", display_name: "lease.pdf" }),
+		];
+		const onRename = vi.fn().mockResolvedValue(undefined);
+		const { rerender } = render(
+			<DocumentViewer documents={documents} onRename={onRename} />,
+		);
+
+		// Expand the section first.
+		fireEvent.click(screen.getByRole("button", { name: "lease.pdf" }));
+		expect(screen.getByTestId("pdf-document")).toBeInTheDocument();
+
+		// Rename it while it's expanded.
+		fireEvent.click(screen.getByRole("button", { name: /rename document/i }));
+		const input = screen.getByRole("textbox", { name: /document name/i });
+		fireEvent.change(input, { target: { value: "Signed Lease" } });
+		fireEvent.submit(input.closest("form") as HTMLFormElement);
+		await waitFor(() =>
+			expect(onRename).toHaveBeenCalledWith("doc-1", "Signed Lease"),
+		);
+
+		// Simulate the real flow: a successful rename updates the underlying
+		// document (via the useDocuments hook), so DocumentViewer re-renders
+		// with the same document id but a new display_name.
+		rerender(
+			<DocumentViewer
+				documents={[
+					makeDocument({ id: "doc-1", display_name: "Signed Lease" }),
+				]}
+				onRename={onRename}
+			/>,
+		);
+
+		// The header label reflects the new name immediately...
+		expect(screen.getByText("Signed Lease")).toBeInTheDocument();
+		expect(screen.queryByText("lease.pdf")).not.toBeInTheDocument();
+		// ...and the section's expand/collapse state was left undisturbed: it
+		// is still expanded, still showing the same mounted PDF content rather
+		// than having been collapsed or remounted from scratch.
+		expect(screen.getByTestId("pdf-document")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Signed Lease" }),
+		).toBeInTheDocument();
 	});
 });
