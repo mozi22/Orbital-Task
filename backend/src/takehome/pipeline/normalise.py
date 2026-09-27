@@ -13,13 +13,15 @@ bullet (section 6, stage 3) that this ticket is scoped to:
     - dates    -> ISO 8601 (YYYY-MM-DD)
     - money    -> integer pence, GBP
     - company names -> suffix-standardised (e.g. "Ltd" == "Limited")
-    - areas    -> square metres, retaining the original value and unit
+    - areas    -> square metres, retaining the original numeric value and a
+                  canonicalised (not verbatim) unit label
 """
 
 from __future__ import annotations
 
 import calendar
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
@@ -95,6 +97,57 @@ _MONTHNAME_DAY_YEAR_RE = re.compile(r"^([A-Za-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})$")
 _NUMERIC_DATE_RE = re.compile(r"^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$")
 
 
+def _extract_iso_date(match: re.Match[str], raw: str) -> tuple[int, int, int] | None:
+    year, month, day = (int(g) for g in match.groups())
+    return year, month, day
+
+
+def _extract_day_monthname_year(match: re.Match[str], raw: str) -> tuple[int, int, int] | None:
+    day_str, month_name, year_str = match.groups()
+    month = _MONTH_NAMES.get(month_name.lower())
+    if month is None:
+        return None
+    return int(year_str), month, int(day_str)
+
+
+def _extract_monthname_day_year(match: re.Match[str], raw: str) -> tuple[int, int, int] | None:
+    month_name, day_str, year_str = match.groups()
+    month = _MONTH_NAMES.get(month_name.lower())
+    if month is None:
+        return None
+    return int(year_str), month, int(day_str)
+
+
+def _extract_numeric_date(match: re.Match[str], raw: str) -> tuple[int, int, int] | None:
+    a, b, year = (int(g) for g in match.groups())
+    day, month = _resolve_numeric_day_month(a, b, raw)
+    return year, month, day
+
+
+# (pattern, extractor) applied in order -- the same "pattern -> canonical
+# result" shape as `_COMPANY_SUFFIX_PATTERNS` and `_AREA_UNIT_FACTORS` below,
+# rather than a chain of copy-pasted `match = X.match(s); if match: ...`
+# blocks. Each extractor returns the parsed (year, month, day), or None if
+# the pattern matched syntactically but named an unrecognised month.
+#
+# Note (deliberate no-new-deps call): this hand-rolled table covers exactly
+# the handful of date shapes these UK commercial-property documents use
+# (see `normalise_date`'s docstring). `python-dateutil` could replace it, but
+# it isn't a current dependency of this project, and pulling it in for this
+# narrow, fully-enumerable set of formats -- with its own day-first/month-
+# first ambiguity heuristics that would need auditing against the UK
+# day-first convention this function deliberately hardcodes -- wasn't judged
+# worth the new dependency for this ticket's scope.
+_DATE_PATTERNS: list[
+    tuple[re.Pattern[str], Callable[[re.Match[str], str], tuple[int, int, int] | None]]
+] = [
+    (_ISO_DATE_RE, _extract_iso_date),
+    (_DAY_MONTHNAME_YEAR_RE, _extract_day_monthname_year),
+    (_MONTHNAME_DAY_YEAR_RE, _extract_monthname_day_year),
+    (_NUMERIC_DATE_RE, _extract_numeric_date),
+]
+
+
 def normalise_date(raw: str) -> str:
     """Normalise a raw extracted date string to ISO 8601 (`YYYY-MM-DD`).
 
@@ -121,30 +174,14 @@ def normalise_date(raw: str) -> str:
     if not s:
         raise UnparseableDateError(f"Could not parse date: {raw!r}")
 
-    match = _ISO_DATE_RE.match(s)
-    if match:
-        year, month, day = (int(g) for g in match.groups())
-        return _build_iso_date(year, month, day, raw)
-
-    match = _DAY_MONTHNAME_YEAR_RE.match(s)
-    if match:
-        day_str, month_name, year_str = match.groups()
-        month = _MONTH_NAMES.get(month_name.lower())
-        if month is not None:
-            return _build_iso_date(int(year_str), month, int(day_str), raw)
-
-    match = _MONTHNAME_DAY_YEAR_RE.match(s)
-    if match:
-        month_name, day_str, year_str = match.groups()
-        month = _MONTH_NAMES.get(month_name.lower())
-        if month is not None:
-            return _build_iso_date(int(year_str), month, int(day_str), raw)
-
-    match = _NUMERIC_DATE_RE.match(s)
-    if match:
-        a, b, year = (int(g) for g in match.groups())
-        day, month = _resolve_numeric_day_month(a, b, raw)
-        return _build_iso_date(year, month, day, raw)
+    for pattern, extractor in _DATE_PATTERNS:
+        match = pattern.match(s)
+        if match is None:
+            continue
+        parsed = extractor(match, raw)
+        if parsed is not None:
+            year, month, day = parsed
+            return _build_iso_date(year, month, day, raw)
 
     raise UnparseableDateError(f"Could not parse date: {raw!r}")
 
@@ -183,17 +220,21 @@ def _build_iso_date(year: int, month: int, day: int, raw: str) -> str:
 # =============================================================================
 
 _UNSUPPORTED_CURRENCY_RE = re.compile(r"(\$|€|USD|EUR|US\$)", re.IGNORECASE)
-_GBP_MARKER_RE = re.compile(r"\bGBP\b", re.IGNORECASE)
+# No `\b` around "GBP": a currency code can butt directly up against the
+# digits with no separating space (e.g. "1234.56GBP"), and a word boundary
+# doesn't exist between two word characters (a digit and a letter are both
+# `\w`), so an anchored `\bGBP\b` silently failed to match that shape.
+_GBP_MARKER_RE = re.compile(r"GBP", re.IGNORECASE)
 _MONEY_AMOUNT_RE = re.compile(r"^-?\d+(\.\d{1,2})?$")
 
 
 def normalise_money(raw: str) -> int:
     """Normalise a raw extracted money string to integer pence, GBP.
 
-    Accepts "£4,250,000", "£4,250,000.50", "GBP 1,234.56", "1,234.56 GBP" and
-    bare numbers (assumed GBP, since this pipeline's documents are all UK
-    commercial property paperwork). A single decimal digit is padded to full
-    pence (e.g. "£4.5" -> 450 pence).
+    Accepts "£4,250,000", "£4,250,000.50", "GBP 1,234.56", "1,234.56 GBP",
+    "1234.56GBP" (no separating space) and bare numbers (assumed GBP, since
+    this pipeline's documents are all UK commercial property paperwork). A
+    single decimal digit is padded to full pence (e.g. "£4.5" -> 450 pence).
 
     Raises UnsupportedCurrencyError if a non-GBP currency symbol or code
     (`$`, `€`, `USD`, `EUR`) is present -- this pipeline never guesses an
@@ -243,6 +284,13 @@ _COMPANY_SUFFIX_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r",?\s*\bllp\.?\s*$", re.IGNORECASE), " LLP"),
 ]
 
+# Matches a single trailing parenthetical (e.g. " (05198234)" appended after
+# a company name) so it can be set aside before the end-anchored suffix
+# patterns above run, then reattached afterwards -- otherwise a trailing
+# parenthetical breaks their `$` anchor and the suffix inside is missed
+# entirely (e.g. "Acme Ltd (05198234)").
+_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*(\([^()]*\))\s*$")
+
 
 def normalise_company_name(raw: str) -> str:
     """Standardise a raw extracted company name's corporate suffix.
@@ -254,6 +302,11 @@ def normalise_company_name(raw: str) -> str:
     surrounding whitespace stripped, but nothing else about the name's
     casing is changed.
 
+    A trailing parenthetical (e.g. a registration number appended after the
+    name, "Acme Ltd (05198234)") is set aside before suffix-matching and
+    reattached afterwards, so it doesn't prevent the suffix from being
+    recognised.
+
     Some extracted "name" values are actually just a bare company/LLP
     registration number (e.g. "05198234", "OC412987", "Company No.
     05198234") with no name text at all -- there's no suffix to standardise,
@@ -262,10 +315,17 @@ def normalise_company_name(raw: str) -> str:
     s = raw.strip()
     s = re.sub(r"\s+", " ", s)
 
+    trailing_paren = ""
+    core = s
+    paren_match = _TRAILING_PARENTHETICAL_RE.search(s)
+    if paren_match:
+        core = s[: paren_match.start()].rstrip()
+        trailing_paren = f" {paren_match.group(1)}"
+
     for pattern, replacement in _COMPANY_SUFFIX_PATTERNS:
-        new_s = pattern.sub(replacement, s)
-        if new_s != s:
-            return new_s.strip()
+        new_core = pattern.sub(replacement, core)
+        if new_core != core:
+            return new_core.strip() + trailing_paren
 
     return s
 
@@ -277,21 +337,50 @@ def normalise_company_name(raw: str) -> str:
 
 @dataclass(frozen=True)
 class NormalisedArea:
-    """A normalised area: the machine-comparable m² value, plus the original
-    value and unit as written (per the requirements doc: "areas in square
-    metres, keep the original unit too")."""
+    """A normalised area: the machine-comparable m² value, the original
+    numeric value as extracted, and a canonicalised unit label.
+
+    `canonical_unit` is *canonicalised*, not verbatim: unit synonyms this
+    pipeline's documents use interchangeably (e.g. "square feet", "sq ft",
+    "sqft") are all folded down to the same reported label ("sq ft") so
+    later rules/gates can compare unit families reliably, per the
+    requirements doc's "areas in square metres, keep the original unit too"
+    -- it is not necessarily the literal unit text as written in the source
+    document.
+    """
 
     value_m2: float
     original_value: float
-    original_unit: str
+    canonical_unit: str
 
 
-# canonical unit token -> (label to report back, conversion factor to m²).
+# canonical unit key -> (label to report back, conversion factor to m²).
 _AREA_UNIT_FACTORS: dict[str, tuple[str, float]] = {
     "m2": ("m2", 1.0),
-    "sqm": ("m2", 1.0),
     "sqft": ("sq ft", 0.09290304),
     "ha": ("ha", 10_000.0),
+}
+
+# Explicit variant -> canonical-key lookup, checked after light, order-
+# independent normalisation (lowercasing, stripping periods, collapsing
+# whitespace, folding "²" to "2"). A single dict lookup rather than a chain
+# of order-dependent `.replace()` calls that assumed intermediate results
+# happened to line up with `_AREA_UNIT_FACTORS`'s keys.
+_AREA_UNIT_ALIASES: dict[str, str] = {
+    "m2": "m2",
+    "sqm": "m2",
+    "sq m": "m2",
+    "square metres": "m2",
+    "square meters": "m2",
+    "square metre": "m2",
+    "square meter": "m2",
+    "sqft": "sqft",
+    "sq ft": "sqft",
+    "square feet": "sqft",
+    "square foot": "sqft",
+    "ha": "ha",
+    "hectares": "ha",
+    "hectare": "ha",
 }
 
 _AREA_LEADING_QUALIFIER_RE = re.compile(
@@ -300,30 +389,27 @@ _AREA_LEADING_QUALIFIER_RE = re.compile(
 _AREA_VALUE_UNIT_RE = re.compile(r"^([\d,]+(?:\.\d+)?)\s*(.+?)\s*$")
 
 
-def _canonicalise_area_unit_token(token: str) -> str:
-    """Collapse the many ways these documents write a unit down to one of
-    the keys in `_AREA_UNIT_FACTORS` (e.g. "sq ft", "square feet", "sqft" all
-    become "sqft")."""
+def _canonicalise_area_unit_token(token: str) -> str | None:
+    """Look up a raw unit token (after light, order-independent
+    normalisation) in `_AREA_UNIT_ALIASES`, returning the canonical key used
+    in `_AREA_UNIT_FACTORS`, or None if it isn't a supported unit."""
     t = token.strip().lower()
     t = t.replace(".", "")
     t = t.replace("²", "2")
-    t = re.sub(r"\s+", " ", t)
-    t = t.replace("square ", "sq ")
-    t = t.replace("metres", "m").replace("meters", "m")
-    t = t.replace("metre", "m").replace("meter", "m")
-    t = t.replace("feet", "ft").replace("foot", "ft")
-    t = t.replace("hectares", "ha").replace("hectare", "ha")
-    return t.replace(" ", "")
+    t = re.sub(r"\s+", " ", t).strip()
+    return _AREA_UNIT_ALIASES.get(t)
 
 
 def normalise_area(raw: str) -> NormalisedArea:
     """Normalise a raw extracted area string to square metres.
 
     Converts sq ft <-> m² (and hectares, which this pipeline's title/
-    environmental reports also use for site areas) while retaining the
-    original value and unit exactly as written, per the requirements doc.
-    Strips a leading approximation qualifier ("About 32,500 sq ft") since
-    that's how these documents phrase most area figures.
+    environmental reports also use for site areas), retaining the original
+    numeric value and reporting a canonicalised (not verbatim) unit label,
+    per the requirements doc. Unit synonyms fold to the same label (e.g.
+    "square feet" and "sq ft" both canonicalise to "sq ft"). Strips a
+    leading approximation qualifier ("About 32,500 sq ft") since that's how
+    these documents phrase most area figures.
 
     Raises UnparseableAreaError if the string has no leading number.
     Raises UnsupportedAreaUnitError if the unit isn't one this pipeline
@@ -348,11 +434,10 @@ def normalise_area(raw: str) -> NormalisedArea:
     except ValueError as exc:
         raise UnparseableAreaError(f"Could not parse area: {raw!r}") from exc
 
-    canonical_unit = _canonicalise_area_unit_token(unit_str)
-    factors = _AREA_UNIT_FACTORS.get(canonical_unit)
-    if factors is None:
+    canonical_key = _canonicalise_area_unit_token(unit_str)
+    if canonical_key is None:
         raise UnsupportedAreaUnitError(f"Unsupported area unit in: {raw!r}")
 
-    label, factor = factors
+    label, factor = _AREA_UNIT_FACTORS[canonical_key]
     value_m2 = round(original_value * factor, 2)
-    return NormalisedArea(value_m2=value_m2, original_value=original_value, original_unit=label)
+    return NormalisedArea(value_m2=value_m2, original_value=original_value, canonical_unit=label)

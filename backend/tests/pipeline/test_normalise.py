@@ -136,6 +136,12 @@ class TestNormaliseMoney:
         with pytest.raises(UnparseableMoneyError):
             normalise_money("£")
 
+    def test_parses_gbp_suffix_with_no_separating_space(self) -> None:
+        # A digit and a letter are both "word" characters, so a `\b`-anchored
+        # currency marker regex doesn't match at their boundary -- this used
+        # to raise UnparseableMoneyError instead of parsing.
+        assert normalise_money("1234.56GBP") == 123_456
+
 
 # =============================================================================
 # Company names
@@ -189,6 +195,14 @@ class TestNormaliseCompanyName:
     def test_handles_an_llp_registration_number_only_value_unchanged(self) -> None:
         assert normalise_company_name("OC412987") == "OC412987"
 
+    def test_standardises_suffix_before_a_trailing_registration_number(self) -> None:
+        # A trailing parenthetical (e.g. a registration number appended after
+        # the name) used to break the suffix patterns' end-of-string anchor,
+        # so the suffix inside was silently left un-standardised.
+        assert (
+            normalise_company_name("Acme Ltd (05198234)") == "Acme Limited (05198234)"
+        )
+
 
 # =============================================================================
 # Areas
@@ -198,23 +212,25 @@ class TestNormaliseCompanyName:
 class TestNormaliseArea:
     def test_parses_square_metres_symbol(self) -> None:
         result = normalise_area("3,019 m²")
-        assert result == NormalisedArea(value_m2=3019.0, original_value=3019.0, original_unit="m2")
+        assert result == NormalisedArea(value_m2=3019.0, original_value=3019.0, canonical_unit="m2")
 
     def test_parses_plain_m2(self) -> None:
         result = normalise_area("1200 m2")
         assert result.value_m2 == 1200.0
-        assert result.original_unit == "m2"
+        assert result.canonical_unit == "m2"
 
     def test_converts_square_feet_to_square_metres(self) -> None:
         result = normalise_area("32,500 sq ft")
         assert result.original_value == 32500.0
-        assert result.original_unit == "sq ft"
+        assert result.canonical_unit == "sq ft"
         # 32,500 sq ft ~= 3019.3 m^2
         assert result.value_m2 == pytest.approx(3019.3, abs=0.5)
 
     def test_converts_square_feet_written_out_in_full(self) -> None:
         result = normalise_area("32,500 square feet")
-        assert result.original_unit == "sq ft"
+        # canonical_unit is a canonicalised label, not verbatim source text --
+        # "square feet" and "sq ft" both fold to the same reported unit.
+        assert result.canonical_unit == "sq ft"
         assert result.value_m2 == pytest.approx(3019.3, abs=0.5)
 
     def test_round_trips_sq_ft_and_m2_within_tolerance(self) -> None:
@@ -226,18 +242,18 @@ class TestNormaliseArea:
     def test_converts_hectares_to_square_metres(self) -> None:
         result = normalise_area("0.34 ha")
         assert result.original_value == 0.34
-        assert result.original_unit == "ha"
+        assert result.canonical_unit == "ha"
         assert result.value_m2 == pytest.approx(3400.0)
 
     def test_strips_leading_approximation_qualifiers(self) -> None:
         result = normalise_area("About 32,500 sq ft")
         assert result.original_value == 32500.0
-        assert result.original_unit == "sq ft"
+        assert result.canonical_unit == "sq ft"
 
     def test_retains_original_value_and_unit_alongside_normalised_value(self) -> None:
         result = normalise_area("1,200 m²")
         assert result.original_value == 1200.0
-        assert result.original_unit == "m2"
+        assert result.canonical_unit == "m2"
         assert result.value_m2 == 1200.0
 
     def test_rejects_unrecognised_unit(self) -> None:
