@@ -90,7 +90,9 @@ class Matter(Base):
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), unique=True
     )
-    # pass | fail | overridden
+    # pass | fail | overridden -- not yet validated in application code (see
+    # the migration that introduces this column); deferred to whichever
+    # future ticket adds the risk-review gate logic itself.
     gate_result: Mapped[str] = mapped_column(String)
     gate_override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

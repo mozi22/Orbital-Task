@@ -27,8 +27,11 @@ def upgrade() -> None:
         sa.Column("conversation_id", sa.String(), nullable=False),
         # pass | fail | overridden -- kept as a plain string (not a DB enum)
         # to match the rest of this schema's convention (see e.g.
-        # `messages.role`, `documents.filename`), which validates such values
-        # in application code rather than via a Postgres ENUM type.
+        # `messages.role`, `documents.filename`), which also uses a plain
+        # string rather than a Postgres ENUM type. Validating that this
+        # column only holds one of those three values in application code
+        # is deferred to whichever future ticket adds the risk-review gate
+        # logic itself; no such validation exists yet.
         sa.Column("gate_result", sa.String(), nullable=False),
         sa.Column("gate_override_reason", sa.Text(), nullable=True),
         sa.Column(

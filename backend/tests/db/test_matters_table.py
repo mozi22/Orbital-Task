@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from pathlib import Path
 
 import pytest
 from alembic.config import Config
@@ -22,52 +21,9 @@ from alembic import command
 from takehome.config import settings
 from takehome.db.models import Matter
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-ALEMBIC_INI = REPO_ROOT / "alembic.ini"
+from .conftest import _fetch_one, _run_sql, make_reset_schema
 
-
-def _alembic_config() -> Config:
-    cfg = Config(str(ALEMBIC_INI))
-    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", settings.database_url)
-    return cfg
-
-
-async def _run_sql(sql: str, params: dict[str, object] | None = None) -> None:
-    engine = create_async_engine(settings.database_url)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text(sql), params or {})
-    finally:
-        await engine.dispose()
-
-
-async def _fetch_one(sql: str, params: dict[str, object]) -> object:
-    engine = create_async_engine(settings.database_url)
-    try:
-        async with engine.connect() as conn:
-            result = await conn.execute(text(sql), params)
-            return result.one()
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
-def reset_schema():
-    """Wipe the schema and re-apply migrations up to (but not including) the
-    matters migration, leaving a clean pre-migration schema for each test.
-
-    See `test_document_display_name.py`'s identical fixture for why this uses
-    a raw `DROP SCHEMA` rather than `Base.metadata.drop_all` or
-    `alembic downgrade base`.
-    """
-    cfg = _alembic_config()
-    asyncio.run(_run_sql("DROP SCHEMA public CASCADE"))
-    asyncio.run(_run_sql("CREATE SCHEMA public"))
-    command.upgrade(cfg, "002_display_name")
-    yield cfg
-    # Leave the DB migrated to head so other tests/tools see a consistent state.
-    command.upgrade(cfg, "head")
+reset_schema = make_reset_schema("002_display_name")
 
 
 def _insert_conversation(conversation_id: str) -> None:
