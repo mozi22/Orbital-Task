@@ -6,6 +6,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../lib/api";
 import { DocumentUpload } from "../DocumentUpload";
 
 function makePdf(name: string): File {
@@ -167,6 +168,40 @@ describe("DocumentUpload", () => {
 			),
 		);
 		expect(screen.getByRole("alert")).toHaveTextContent("bad.pdf");
+	});
+
+	it("with a conversation already at 4 documents, dropping 3 more results in 1 succeeding and the other 2 each showing a distinct cap-exceeded error", async () => {
+		// Simulates a conversation already sitting at 4/5 documents: the first
+		// of 3 dropped files reaches the cap (succeeds), and the backend's
+		// row-locked cap check rejects the other two with a
+		// document_limit_exceeded ApiError each.
+		const onUpload = vi.fn(async (file: File) => {
+			if (file.name !== "fifth.pdf") {
+				throw new ApiError(
+					409,
+					"Conversation already has the maximum of 5 documents allowed.",
+					"document_limit_exceeded",
+				);
+			}
+		});
+		const { container } = render(<DocumentUpload onUpload={onUpload} />);
+		const dropzone = container.querySelector("button") as HTMLElement;
+
+		dropFiles(dropzone, [
+			makePdf("fifth.pdf"),
+			makePdf("sixth.pdf"),
+			makePdf("seventh.pdf"),
+		]);
+
+		await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(3));
+
+		const alert = await waitFor(() => screen.getByRole("alert"));
+		// Both rejected files get their own distinct, cap-specific message...
+		expect(alert).toHaveTextContent("sixth.pdf");
+		expect(alert).toHaveTextContent("seventh.pdf");
+		expect(alert).toHaveTextContent(/document limit reached/i);
+		// ...while the one that actually succeeded never shows up as an error.
+		expect(alert).not.toHaveTextContent("fifth.pdf");
 	});
 
 	it("calls onBatchSettled exactly once after a batch finishes, regardless of per-file outcome", async () => {

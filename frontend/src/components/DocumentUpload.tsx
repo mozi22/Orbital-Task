@@ -1,6 +1,13 @@
 import { Loader2, Upload } from "lucide-react";
 import { type DragEvent, useCallback, useRef, useState } from "react";
+import { ApiError } from "../lib/api";
 import { runWithConcurrency } from "../lib/concurrency";
+
+// The backend's DocumentLimitExceededError code (services/document.py),
+// raised once a conversation already has 5 documents. Checked by code
+// rather than message text so this stays correct even if the wording
+// changes.
+const DOCUMENT_LIMIT_EXCEEDED_CODE = "document_limit_exceeded";
 
 // Batch uploads go through the existing single-file endpoint, one call per
 // file, with at most this many in flight at once (limited concurrency, not
@@ -31,6 +38,20 @@ interface FileUploadError {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : "Upload failed";
+}
+
+// Cap-exceeded failures get their own distinct, clearly-labeled message
+// instead of the raw upload-service error text, so a file that didn't fit
+// under the 5-document cap reads unambiguously differently from a wrong-type
+// or oversized-file failure in the same batch.
+function uploadFailureMessage(error: unknown): string {
+	if (
+		error instanceof ApiError &&
+		error.code === DOCUMENT_LIMIT_EXCEEDED_CODE
+	) {
+		return `Document limit reached: ${error.message}`;
+	}
+	return errorMessage(error);
 }
 
 function isPdf(file: File): boolean {
@@ -97,7 +118,7 @@ export function DocumentUpload({
 				.filter((result) => result.status === "rejected")
 				.map((result) => ({
 					fileName: result.item.name,
-					message: errorMessage(result.error),
+					message: uploadFailureMessage(result.error),
 				}));
 			setUploadErrors([...invalidTypeErrors, ...uploadFailures]);
 
