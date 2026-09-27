@@ -34,7 +34,7 @@ os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-placeholder-key")
 
 from takehome.db.models import Base  # noqa: E402
-from takehome.db.session import get_session  # noqa: E402
+from takehome.db.session import get_session, get_session_factory  # noqa: E402
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
 TestSessionLocal = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
@@ -67,9 +67,18 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
             yield db_session
 
     app.dependency_overrides[get_session] = _override_get_session
+    # `send_message`'s streamed response opens a *second* session later (via
+    # `get_session_factory`, see that dependency's docstring) that isn't
+    # reachable through the `get_session` override above -- it must be
+    # pointed at the isolated test database too, or it silently talks to
+    # whatever engine `takehome.db.session` was first imported with, which
+    # can corrupt state across the schema resets `_reset_database` does
+    # between tests.
+    app.dependency_overrides[get_session_factory] = lambda: TestSessionLocal
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
     app.dependency_overrides.pop(get_session, None)
+    app.dependency_overrides.pop(get_session_factory, None)

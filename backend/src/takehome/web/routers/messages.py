@@ -8,11 +8,11 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import StreamingResponse
 
 from takehome.db.models import Message
-from takehome.db.session import get_session
+from takehome.db.session import get_session, get_session_factory
 from takehome.services.conversation import get_conversation, update_conversation
 from takehome.services.document import get_documents_for_conversation
 from takehome.services.llm import (
@@ -92,6 +92,7 @@ async def send_message(
     conversation_id: str,
     body: MessageCreate,
     session: AsyncSession = Depends(get_session),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> StreamingResponse:
     """Send a user message and stream back the AI response via SSE."""
     # Verify the conversation exists
@@ -168,9 +169,9 @@ async def send_message(
         sources = count_sources_cited(full_response)
 
         # Save the assistant message to the database.
-        # We need a fresh session since the outer one may have been closed.
-        from takehome.db.session import async_session as session_factory
-
+        # We need a fresh session since the outer one may have been closed --
+        # taken from the `session_factory` dependency (not imported directly)
+        # so tests overriding `get_session_factory` reach it too.
         async with session_factory() as save_session:
             assistant_message = Message(
                 conversation_id=conversation_id,
