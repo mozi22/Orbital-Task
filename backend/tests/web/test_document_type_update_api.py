@@ -3,8 +3,10 @@
 Covers issue #33: the frontend's editable document_type dropdown (next to
 the rename pencil) calls `PATCH /api/documents/{id}` with a `document_type`
 field, sharing the same endpoint `rename` already uses (see #17) rather than
-a second dedicated route. Depends only on #31's nullable `document_type`
-column -- not on #32's auto-classification, which may not exist yet.
+a second dedicated route. #32's auto-classification now runs on every
+upload, so uploaded documents are classified immediately rather than
+starting `null` -- these tests instead cover that a user can still
+explicitly clear a document's classification back to `null` via PATCH.
 """
 
 from __future__ import annotations
@@ -27,12 +29,20 @@ async def _create_conversation_with_document(client: AsyncClient) -> tuple[str, 
     return conversation_id, document_id
 
 
-async def test_uploaded_document_has_null_document_type_by_default(
+async def test_patch_document_type_can_be_cleared_to_null(
     client: AsyncClient,
 ) -> None:
-    """Before #32's classification exists, every upload's document_type is
-    NULL and the upload response itself already reports that."""
+    """#32's auto-classification runs on upload, so a document already has a
+    non-null document_type by the time a user can edit it -- but explicitly
+    clearing it back to "unclassified" via PATCH must still be possible."""
     _conversation_id, document_id = await _create_conversation_with_document(client)
+
+    patch_resp = await client.patch(
+        f"/api/documents/{document_id}",
+        json={"document_type": None},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json()["document_type"] is None
 
     get_resp = await client.get(f"/api/conversations/{_conversation_id}")
     assert get_resp.status_code == 200
