@@ -29,6 +29,9 @@ class Conversation(Base):
     documents: Mapped[list[Document]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"
     )
+    matter: Mapped[Matter | None] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class Message(Base):
@@ -68,3 +71,28 @@ class Document(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     conversation: Mapped[Conversation] = relationship(back_populates="documents")
+
+
+class Matter(Base):
+    """A 1:1 extension of a Conversation holding risk-review gate state.
+
+    Created the first time risk review is run on a Conversation (see the
+    Milestone 2 PRD). The unique constraint on `conversation_id` is what
+    actually enforces "one Matter per Conversation" -- the ORM relationship
+    below is just a convenience for navigating it.
+    """
+
+    __tablename__ = "matters"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: uuid.uuid4().hex[:16]
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), unique=True
+    )
+    # pass | fail | overridden
+    gate_result: Mapped[str] = mapped_column(String)
+    gate_override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    conversation: Mapped[Conversation] = relationship(back_populates="matter")
