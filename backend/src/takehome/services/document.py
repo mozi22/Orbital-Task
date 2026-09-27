@@ -10,7 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.config import settings
-from takehome.db.models import Conversation, Document
+from takehome.db.models import Document
+from takehome.services.conversation import lock_conversation_for_update
 from takehome.services.llm import classify_document_type
 
 logger = structlog.get_logger()
@@ -83,10 +84,8 @@ async def upload_document(
     """
     # Lock the conversation row for the duration of the check-then-act cap
     # check below, so two concurrent uploads to the same conversation can't
-    # both read a count under the cap and both commit past it. Postgres
-    # releases this lock at transaction end (commit/rollback).
-    lock_stmt = select(Conversation.id).where(Conversation.id == conversation_id).with_for_update()
-    await session.execute(lock_stmt)
+    # both read a count under the cap and both commit past it.
+    await lock_conversation_for_update(session, conversation_id)
 
     # Check if the conversation has already reached the document cap. Counted
     # via SELECT count(*) rather than fetching full rows (which would include
