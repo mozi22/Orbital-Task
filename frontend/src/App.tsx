@@ -6,6 +6,7 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { useConversations } from "./hooks/use-conversations";
 import { useDocuments } from "./hooks/use-documents";
 import { useMessages } from "./hooks/use-messages";
+import { MAX_DOCUMENTS_PER_CONVERSATION } from "./lib/api";
 
 export default function App() {
 	const {
@@ -86,7 +87,8 @@ export default function App() {
 					error={messagesError}
 					streaming={streaming}
 					streamingContent={streamingContent}
-					hasDocument={documents.length > 0}
+					documentCount={documents.length}
+					maxDocuments={MAX_DOCUMENTS_PER_CONVERSATION}
 					conversationId={selectedId}
 					onSend={handleSend}
 					onUpload={handleUpload}
@@ -94,9 +96,7 @@ export default function App() {
 					documentError={documentError}
 				/>
 
-				{/* DocumentViewer still renders a single document; showing all
-				attached documents side-by-side (accordion) is tracked separately. */}
-				<DocumentViewer document={documents[0] ?? null} onRename={rename} />
+				<DocumentViewer documents={documents} onRename={rename} />
 			</div>
 		</TooltipProvider>
 	);

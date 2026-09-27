@@ -8,7 +8,10 @@ interface ChatInputProps {
 	onUpload: (file: File) => void | Promise<void>;
 	onUploadSettled?: () => void;
 	disabled: boolean;
-	hasDocument: boolean;
+	/** Number of documents currently attached to this conversation. */
+	documentCount: number;
+	/** The conversation-wide document cap (mirrors the backend's limit). */
+	maxDocuments: number;
 }
 
 export function ChatInput({
@@ -16,8 +19,11 @@ export function ChatInput({
 	onUpload,
 	onUploadSettled,
 	disabled,
-	hasDocument,
+	documentCount,
+	maxDocuments,
 }: ChatInputProps) {
+	const atCap = documentCount >= maxDocuments;
+	const attachedLabel = `${documentCount}/${maxDocuments} documents attached`;
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
@@ -79,17 +85,16 @@ export function ChatInput({
 							<Button
 								variant="ghost"
 								size="icon"
+								aria-label="Attach document"
 								className="h-8 w-8 flex-shrink-0"
-								disabled={hasDocument}
+								disabled={atCap}
 								onClick={() => fileInputRef.current?.click()}
 							>
 								<Paperclip className="h-4 w-4 text-neutral-500" />
 							</Button>
 						</div>
 					</TooltipTrigger>
-					{hasDocument && (
-						<TooltipContent>Document already uploaded</TooltipContent>
-					)}
+					<TooltipContent>{attachedLabel}</TooltipContent>
 				</Tooltip>
 
 				<input
@@ -99,6 +104,10 @@ export function ChatInput({
 					className="hidden"
 					onChange={handleFileChange}
 				/>
+
+				<span className="flex-shrink-0 text-xs text-neutral-400">
+					{attachedLabel}
+				</span>
 
 				<textarea
 					ref={textareaRef}
