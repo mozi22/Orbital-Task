@@ -14,8 +14,13 @@ from starlette.responses import StreamingResponse
 from takehome.db.models import Message
 from takehome.db.session import get_session
 from takehome.services.conversation import get_conversation, update_conversation
-from takehome.services.document import get_document_for_conversation
-from takehome.services.llm import chat_with_document, count_sources_cited, generate_title
+from takehome.services.document import get_documents_for_conversation
+from takehome.services.llm import (
+    DocumentContext,
+    chat_with_documents,
+    count_sources_cited,
+    generate_title,
+)
 
 logger = structlog.get_logger()
 
@@ -106,9 +111,16 @@ async def send_message(
 
     logger.info("User message saved", conversation_id=conversation_id, message_id=user_message.id)
 
-    # Load document text for the conversation
-    document = await get_document_for_conversation(session, conversation_id)
-    document_text: str | None = document.extracted_text if document else None
+    # Load every document attached to the conversation, wrapped with its
+    # display_name for prompt attribution/citation (issue #19). Documents
+    # without extracted text (e.g. extraction failed) are skipped rather than
+    # handed to the model as an empty block.
+    documents = await get_documents_for_conversation(session, conversation_id)
+    document_contexts: list[DocumentContext] = [
+        DocumentContext(display_name=d.display_name, text=d.extracted_text)
+        for d in documents
+        if d.extracted_text
+    ]
 
     # Load conversation history (exclude the message we just saved, it will be the user_message param)
     stmt = (
@@ -133,9 +145,9 @@ async def send_message(
         full_response = ""
 
         try:
-            async for chunk in chat_with_document(
+            async for chunk in chat_with_documents(
                 user_message=body.content,
-                document_text=document_text,
+                documents=document_contexts,
                 conversation_history=conversation_history,
             ):
                 full_response += chunk

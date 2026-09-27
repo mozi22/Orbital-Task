@@ -162,18 +162,6 @@ async def get_document(session: AsyncSession, document_id: str) -> Document | No
     return result.scalar_one_or_none()
 
 
-async def get_document_for_conversation(
-    session: AsyncSession, conversation_id: str
-) -> Document | None:
-    """Get the first document for a conversation, if one exists.
-
-    Used by single-document call sites (e.g. chat prompt building) that
-    haven't yet been updated to work across multiple documents.
-    """
-    documents = await get_documents_for_conversation(session, conversation_id)
-    return documents[0] if documents else None
-
-
 async def rename_document(
     session: AsyncSession, document_id: str, display_name: str
 ) -> Document | None:
