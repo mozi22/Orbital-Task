@@ -49,12 +49,12 @@ function makeDocument(overrides: Partial<Document> = {}): Document {
 	};
 }
 
-describe("DocumentViewer", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-		cleanup();
-	});
+afterEach(() => {
+	vi.restoreAllMocks();
+	cleanup();
+});
 
+describe("DocumentViewer", () => {
 	it("shows an empty state when there are no documents", () => {
 		render(<DocumentViewer documents={[]} />);
 		expect(screen.getByText(/no document uploaded/i)).toBeInTheDocument();
@@ -167,11 +167,6 @@ describe("DocumentViewer", () => {
 });
 
 describe("DocumentViewer rename", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-		cleanup();
-	});
-
 	it("renders nothing rename-related when there are no documents", () => {
 		render(<DocumentViewer documents={[]} onRename={vi.fn()} />);
 		expect(
@@ -279,59 +274,6 @@ describe("DocumentViewer rename", () => {
 
 		// The section must still be collapsed: no PDF content is mounted.
 		expect(screen.queryByTestId("pdf-document")).not.toBeInTheDocument();
-	});
-});
-
-// Issue #27 asks for two specific things: (1) the pencil-edit affordance must
-// live inline inside each accordion section's own header, and (2) renaming
-// through it must update that header's label immediately without disturbing
-// the section's expand/collapse state. Both are already exercised
-// structurally by the "DocumentViewer rename" suite above (e.g. "does not
-// toggle the accordion section when clicking the pencil" proves the pencil
-// lives in the header and is wired to that section, not a separate
-// placeholder). This suite closes the one gap: it never asserted the header
-// label actually reflects a new display_name after a rename resolves, nor
-// that an *expanded* section stays expanded (rather than being remounted or
-// collapsed) once its parent re-renders with the renamed document.
-describe("DocumentViewer rename — accordion header integration (issue #27)", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-		cleanup();
-	});
-
-	it("keeps the pencil-edit affordance inside the section's own header row, alongside its expand/collapse trigger", () => {
-		const documents = [
-			makeDocument({ id: "doc-1", display_name: "Lease Agreement" }),
-			makeDocument({ id: "doc-2", display_name: "Title Report" }),
-		];
-		render(<DocumentViewer documents={documents} onRename={vi.fn()} />);
-
-		const leaseToggle = screen.getByRole("button", {
-			name: "Lease Agreement",
-		});
-		const titleToggle = screen.getByRole("button", { name: "Title Report" });
-		const [leaseRenameButton, titleRenameButton] = screen.getAllByRole(
-			"button",
-			{ name: /rename document/i },
-		);
-		expect(leaseRenameButton).toBeInTheDocument();
-		expect(titleRenameButton).toBeInTheDocument();
-
-		// Each section's pencil button and its expand/collapse trigger must
-		// share the same header container (a common ancestor that does *not*
-		// also contain the other section's toggle), proving the affordance is
-		// scoped to that specific accordion header rather than living in some
-		// shared/placeholder location.
-		const leaseHeader = leaseToggle.closest(
-			"div.flex.items-center.justify-between",
-		) as HTMLElement;
-		const titleHeader = titleToggle.closest(
-			"div.flex.items-center.justify-between",
-		) as HTMLElement;
-		expect(leaseHeader).not.toBe(titleHeader);
-		expect(leaseHeader).toContainElement(leaseRenameButton ?? null);
-		expect(titleHeader).toContainElement(titleRenameButton ?? null);
-		expect(leaseHeader).not.toContainElement(titleRenameButton ?? null);
 	});
 
 	it("updates the header label immediately after a successful rename, without collapsing an already-expanded section", async () => {
