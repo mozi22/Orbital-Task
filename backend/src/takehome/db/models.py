@@ -1,14 +1,33 @@
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class DocumentType(enum.StrEnum):
+    """Classification of an uploaded document, used by the risk-review
+    pipeline (Milestone 2) to decide which extraction and rules apply.
+    """
+
+    TITLE = "title"
+    LEASE = "lease"
+    ENVIRONMENTAL = "environmental"
+    OTHER = "other"
+
+
+def _document_type_values(enum_cls: type[DocumentType]) -> list[str]:
+    """Store each member's lowercase `.value` (e.g. "title") as the Postgres
+    enum's label, rather than SQLAlchemy's default of `.name` (e.g. "TITLE").
+    """
+    return [member.value for member in enum_cls]
 
 
 class Conversation(Base):
@@ -66,5 +85,17 @@ class Document(Base):
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_count: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Classification driving which extraction/rules the risk-review pipeline
+    # applies (see Milestone 2 PRD). Nullable: unset until the auto-
+    # classification call runs (or is corrected by the user afterward).
+    document_type: Mapped[DocumentType | None] = mapped_column(
+        Enum(
+            DocumentType,
+            name="document_type",
+            native_enum=True,
+            values_callable=_document_type_values,
+        ),
+        nullable=True,
+    )
 
     conversation: Mapped[Conversation] = relationship(back_populates="documents")
