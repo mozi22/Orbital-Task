@@ -12,7 +12,10 @@ interface ChatWindowProps {
 	documentError?: string | null;
 	streaming: boolean;
 	streamingContent: string;
-	hasDocument: boolean;
+	/** Number of documents currently attached to this conversation. */
+	documentCount: number;
+	/** The conversation-wide document cap (mirrors the backend's limit). */
+	maxDocuments: number;
 	conversationId: string | null;
 	onSend: (content: string) => void;
 	onUpload: (file: File) => void | Promise<void>;
@@ -31,13 +34,15 @@ export function ChatWindow({
 	documentError,
 	streaming,
 	streamingContent,
-	hasDocument,
+	documentCount,
+	maxDocuments,
 	conversationId,
 	onSend,
 	onUpload,
 	onUploadSettled,
 }: ChatWindowProps) {
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const hasDocument = documentCount > 0;
 
 	// Auto-scroll to bottom when new messages arrive or during streaming
 	const messagesLength = messages.length;
@@ -83,7 +88,10 @@ export function ChatWindow({
 					{hasDocument ? (
 						<div className="text-center">
 							<p className="text-sm text-neutral-500">
-								Document uploaded. Ask a question to get started.
+								<span className="font-medium">
+									{documentCount}/{maxDocuments} documents attached
+								</span>
+								. Ask a question to get started.
 							</p>
 						</div>
 					) : (
@@ -95,7 +103,8 @@ export function ChatWindow({
 					onUpload={onUpload}
 					onUploadSettled={onUploadSettled}
 					disabled={streaming}
-					hasDocument={hasDocument}
+					documentCount={documentCount}
+					maxDocuments={maxDocuments}
 				/>
 			</div>
 		);
@@ -128,7 +137,8 @@ export function ChatWindow({
 				onUpload={onUpload}
 				onUploadSettled={onUploadSettled}
 				disabled={streaming}
-				hasDocument={hasDocument}
+				documentCount={documentCount}
+				maxDocuments={maxDocuments}
 			/>
 		</div>
 	);
