@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from takehome.db.models import Conversation, DocumentType
+from takehome.db.models import Conversation
 from takehome.db.session import get_session
 from takehome.services.conversation import (
     create_conversation,
@@ -15,6 +15,7 @@ from takehome.services.conversation import (
     list_conversations,
     update_conversation,
 )
+from takehome.web.schemas import DocumentBase
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -34,19 +35,9 @@ class ConversationListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DocumentInfo(BaseModel):
-    id: str
-    filename: str
-    display_name: str
-    page_count: int
-    uploaded_at: datetime
-    # Classification driving the risk-review pipeline (Milestone 2), shown as
-    # an editable dropdown next to the rename pencil (see #33). `None` until
-    # auto-classification runs (or the user corrects it via PATCH
-    # /api/documents/{id}).
-    document_type: DocumentType | None = None
-
-    model_config = {"from_attributes": True}
+class DocumentInfo(DocumentBase):
+    """Same shape as `documents.DocumentOut` minus `conversation_id` (this is
+    already nested under a conversation, so it'd be redundant here)."""
 
 
 class ConversationDetail(BaseModel):
