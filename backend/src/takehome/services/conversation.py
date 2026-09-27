@@ -8,6 +8,30 @@ from sqlalchemy.orm.attributes import set_committed_value
 from takehome.db.models import Conversation
 
 
+async def lock_conversation_for_update(session: AsyncSession, conversation_id: str) -> None:
+    """Take a row-level lock on a conversation for the duration of the
+    caller's check-then-act.
+
+    Shared by every service that needs to serialize a "check something about
+    this conversation, then act on the result" sequence against concurrent
+    requests for the *same* conversation (currently `document.upload_document`'s
+    per-conversation document-cap check, and `matter.get_or_create_matter`'s
+    get-or-create check) -- without this lock, two concurrent callers could
+    both read the same "not yet" state and both act on it, racing whatever
+    constraint or invariant the caller is trying to protect.
+
+    Postgres releases `SELECT ... FOR UPDATE` locks at transaction end
+    (commit/rollback), so callers don't need to release this explicitly.
+    This is a Postgres-specific concurrency guarantee -- `FOR UPDATE`
+    row-locking semantics don't carry over identically to every backend
+    (e.g. SQLite has no real row-level locking), and this codebase's tests
+    and runtime both assume Postgres (see `settings.database_url` /
+    `TEST_DATABASE_URL`).
+    """
+    lock_stmt = select(Conversation.id).where(Conversation.id == conversation_id).with_for_update()
+    await session.execute(lock_stmt)
+
+
 async def create_conversation(session: AsyncSession) -> Conversation:
     """Create a new conversation with default title."""
     conversation = Conversation()

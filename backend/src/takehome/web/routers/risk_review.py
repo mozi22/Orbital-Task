@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -28,7 +30,7 @@ class RiskReviewTriggerResponse(BaseModel):
     # client-facing contract doesn't have to change if a future ticket adds
     # a distinct per-run record.
     run_id: str
-    status: str
+    status: Literal["running"]
 
 
 # --------------------------------------------------------------------------- #

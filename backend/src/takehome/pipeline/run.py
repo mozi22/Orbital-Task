@@ -9,6 +9,16 @@ later, separate ticket. This function exists so the trigger endpoint has an
 actual background job to kick off (not just a fire-and-forget no-op inline
 in the router), and so those later tickets have one place to plug real
 stage logic into without reshaping the endpoint that calls it.
+
+This module stays a single, separate `run.py` rather than growing "one
+placeholder module per future stage" -- the package's own convention
+(`takehome.pipeline.__init__`, and `normalise.py`'s existing precedent) is
+already one module *per real stage* (parse, extract, normalise, gate,
+rules, verify, report), not one per stub. `run_stub_pipeline` itself is the
+orchestrator that will eventually call each of those stage modules in
+sequence, not a stage itself -- so it has exactly one home, here, and later
+tickets add real stage modules alongside it rather than adding to this
+file or forking off new orchestrator modules.
 """
 
 from __future__ import annotations

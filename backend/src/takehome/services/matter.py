@@ -3,7 +3,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from takehome.db.models import Conversation, Matter
+from takehome.db.models import Matter
+from takehome.services.conversation import lock_conversation_for_update
 
 # Sentinel written to `gate_result` when a Matter is first created, before
 # the real identity-gate logic (a later Milestone 2 ticket, see the gate
@@ -36,17 +37,31 @@ async def get_or_create_matter(
     re-run without a second query.
 
     Locks the conversation row for the duration of this check-then-act (the
-    same pattern `services.document.upload_document` uses for its own
-    check-then-act cap check) so two concurrent first-time triggers on the
-    same conversation can't both observe "no Matter yet" and both attempt to
-    insert one -- without the lock, the loser would hit the `matters.
-    conversation_id` unique constraint as an unhandled `IntegrityError`
-    instead of transparently reusing the winner's row.
+    same `lock_conversation_for_update` helper `services.document.
+    upload_document` uses for its own check-then-act cap check) so two
+    concurrent first-time triggers on the same conversation can't both
+    observe "no Matter yet" and both attempt to insert one -- without the
+    lock, the loser would hit the `matters.conversation_id` unique
+    constraint as an unhandled `IntegrityError` instead of transparently
+    reusing the winner's row.
+
+    Commits its own transaction on the create path (consistent with every
+    other write in this codebase's service layer -- `create_conversation`,
+    `update_conversation`, `upload_document`, `rename_document` all do the
+    same), so the caller never needs to call `session.commit()` itself.
+    That is a real constraint on composition, not just an implementation
+    detail: it means a future ticket cannot fold an additional write (e.g. a
+    separate per-run record) into the *same* atomic transaction as Matter
+    creation without either (a) accepting two separate commits (the Matter
+    row becomes visible before the second write happens, so a crash between
+    them leaves a Matter with no corresponding second row), or (b) reshaping
+    this function to stop committing internally and let the caller control
+    the transaction boundary instead. Given every other service function
+    here already commits internally and no caller today needs cross-write
+    atomicity with Matter creation, that reshape is deliberately deferred
+    until a ticket actually needs it, rather than done speculatively now.
     """
-    lock_stmt = (
-        select(Conversation.id).where(Conversation.id == conversation_id).with_for_update()
-    )
-    await session.execute(lock_stmt)
+    await lock_conversation_for_update(session, conversation_id)
 
     matter = await get_matter_for_conversation(session, conversation_id)
     if matter is not None:
