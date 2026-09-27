@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from takehome.db.models import Conversation
 
@@ -12,7 +13,12 @@ async def create_conversation(session: AsyncSession) -> Conversation:
     conversation = Conversation()
     session.add(conversation)
     await session.commit()
-    await session.refresh(conversation)
+    # Postgres's implicit RETURNING on the INSERT already populates
+    # `created_at`/`updated_at` in memory on commit, so no refresh is needed
+    # for those. A brand-new conversation always has zero documents, and
+    # that relationship was never loaded on this instance, so set it
+    # directly via `set_committed_value` instead of issuing a query for it.
+    set_committed_value(conversation, "documents", [])
     return conversation
 
 
@@ -46,8 +52,16 @@ async def update_conversation(
     if conversation is None:
         return None
     conversation.title = title
+    documents = conversation.documents
     await session.commit()
-    await session.refresh(conversation)
+    # `updated_at` is bumped by the DB via `onupdate`, so refresh it here.
+    # This scoped `attribute_names=[...]` refresh only expires the named
+    # attributes, not `documents`, so the collection eagerly loaded by
+    # `get_conversation` above isn't actually at risk here. Restoring it via
+    # `set_committed_value` below is defensive belt-and-suspenders — cheap
+    # insurance against that behavior changing, not a fix for a live crash.
+    await session.refresh(conversation, attribute_names=["title", "updated_at"])
+    set_committed_value(conversation, "documents", documents)
     return conversation
 
 
