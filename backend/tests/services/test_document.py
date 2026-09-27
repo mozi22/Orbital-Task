@@ -8,11 +8,14 @@ from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers
 
+from takehome.config import settings
 from takehome.db.models import Document
 from takehome.services.conversation import create_conversation
 from takehome.services.document import (
     MAX_DOCUMENTS_PER_CONVERSATION,
     DocumentLimitExceededError,
+    FileTooLargeError,
+    InvalidFileTypeError,
     get_documents_for_conversation,
     upload_document,
 )
@@ -58,6 +61,50 @@ async def test_upload_document_rejects_sixth_document(session: AsyncSession) -> 
 
     docs = await get_documents_for_conversation(session, conversation.id)
     assert len(docs) == MAX_DOCUMENTS_PER_CONVERSATION
+
+
+async def test_upload_document_rejects_non_pdf_file(session: AsyncSession) -> None:
+    conversation = await create_conversation(session)
+
+    non_pdf = UploadFile(
+        file=io.BytesIO(b"not a pdf"),
+        filename="notes.txt",
+        headers=Headers({"content-type": "text/plain"}),
+    )
+
+    with pytest.raises(InvalidFileTypeError, match="Only PDF files"):
+        await upload_document(session, conversation.id, non_pdf)
+
+    docs = await get_documents_for_conversation(session, conversation.id)
+    assert len(docs) == 0
+
+
+async def test_upload_document_rejects_oversized_file(session: AsyncSession) -> None:
+    conversation = await create_conversation(session)
+
+    oversized = UploadFile(
+        file=io.BytesIO(b"0" * (settings.max_upload_size + 1)),
+        filename="huge.pdf",
+        headers=Headers({"content-type": "application/pdf"}),
+    )
+
+    with pytest.raises(FileTooLargeError, match="File too large"):
+        await upload_document(session, conversation.id, oversized)
+
+    docs = await get_documents_for_conversation(session, conversation.id)
+    assert len(docs) == 0
+
+
+def test_document_upload_error_codes_are_distinct() -> None:
+    """The three upload-failure exceptions must carry distinct machine-
+    readable codes so callers (e.g. batch-upload UX) can tell cap-exceeded
+    apart from wrong-file-type and oversized-file failures."""
+    codes = {
+        DocumentLimitExceededError("x").code,
+        InvalidFileTypeError("x").code,
+        FileTooLargeError("x").code,
+    }
+    assert len(codes) == 3
 
 
 async def test_upload_document_guard_counts_documents_not_existence(

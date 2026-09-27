@@ -11,7 +11,12 @@ from starlette.responses import FileResponse
 
 from takehome.db.session import get_session
 from takehome.services.conversation import get_conversation
-from takehome.services.document import DocumentLimitExceededError, get_document, upload_document
+from takehome.services.document import (
+    DocumentLimitExceededError,
+    DocumentUploadError,
+    get_document,
+    upload_document,
+)
 
 logger = structlog.get_logger()
 
@@ -51,7 +56,11 @@ async def upload_document_endpoint(
     """Upload a PDF document for a conversation.
 
     Up to 5 documents per conversation are allowed. Returns 409 once the cap
-    is reached.
+    is reached, and 400 for wrong-file-type or oversized-file failures. Every
+    error response body carries a ``code`` field (``document_limit_exceeded``,
+    ``invalid_file_type``, or ``file_too_large``) in addition to a distinct
+    ``message``, so callers can tell the three failure reasons apart without
+    relying on status code or message text alone.
     """
     # Verify the conversation exists
     conversation = await get_conversation(session, conversation_id)
@@ -61,9 +70,13 @@ async def upload_document_endpoint(
     try:
         document = await upload_document(session, conversation_id, file)
     except DocumentLimitExceededError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=409, detail={"code": e.code, "message": str(e)}
+        ) from e
+    except DocumentUploadError as e:
+        raise HTTPException(
+            status_code=400, detail={"code": e.code, "message": str(e)}
+        ) from e
 
     logger.info(
         "Document uploaded",
