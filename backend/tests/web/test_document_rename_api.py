@@ -45,19 +45,8 @@ async def test_patch_document_rename_reflected_on_conversation_get(client: Async
     assert get_resp.status_code == 200
     body = get_resp.json()
 
-    # `ConversationDetail` is mid-migration from a singular `document` field
-    # to a `documents` list (see issue #14 / PR #91). Once that lands here,
-    # `document` disappears entirely and the renamed document must be looked
-    # up by id in `documents`, matching the pattern used in
-    # tests/web/test_conversations_api.py. Support both shapes so this
-    # assertion is correct whether this branch is exercised on its own
-    # (pre-#14, singular `document`) or once merged with #14 (`documents`
-    # list).
-    if "documents" in body:
-        documents_by_id = {doc["id"]: doc for doc in body["documents"]}
-        assert documents_by_id[document_id]["display_name"] == "Lease Agreement"
-    else:
-        assert body["document"]["display_name"] == "Lease Agreement"
+    documents_by_id = {doc["id"]: doc for doc in body["documents"]}
+    assert documents_by_id[document_id]["display_name"] == "Lease Agreement"
 
 
 async def test_patch_nonexistent_document_returns_404(client: AsyncClient) -> None:

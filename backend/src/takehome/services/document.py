@@ -18,8 +18,38 @@ logger = structlog.get_logger()
 MAX_DOCUMENTS_PER_CONVERSATION = 5
 
 
-class DocumentLimitExceededError(ValueError):
+class DocumentUploadError(ValueError):
+    """Base class for document upload validation failures.
+
+    Each subclass carries a distinct ``code`` so callers (the router, and
+    ultimately batch-upload UX) can tell failure reasons apart programmatically
+    instead of pattern-matching on the human-readable message.
+
+    This base class is never meant to be raised directly — only its
+    subclasses below (each with its own documented ``code``) should be
+    raised. The ``code`` here exists solely as a fallback default and is not
+    one of the documented, publicly-relied-upon codes.
+    """
+
+    code = "document_upload_error"
+
+
+class DocumentLimitExceededError(DocumentUploadError):
     """Raised when a conversation already has the maximum number of documents."""
+
+    code = "document_limit_exceeded"
+
+
+class InvalidFileTypeError(DocumentUploadError):
+    """Raised when the uploaded file is not a PDF."""
+
+    code = "invalid_file_type"
+
+
+class FileTooLargeError(DocumentUploadError):
+    """Raised when the uploaded file exceeds the configured size limit."""
+
+    code = "file_too_large"
 
 
 async def upload_document(
@@ -31,8 +61,10 @@ async def upload_document(
     and stores metadata in the database.
 
     Raises DocumentLimitExceededError if the conversation already has the
-    maximum number of documents allowed, or ValueError if the file is not a
-    PDF.
+    maximum number of documents allowed, InvalidFileTypeError if the file is
+    not a PDF, or FileTooLargeError if it exceeds the configured size limit.
+    Each is a distinctly-coded subclass of DocumentUploadError so callers can
+    tell the failure reasons apart without parsing message text.
     """
     # Lock the conversation row for the duration of the check-then-act cap
     # check below, so two concurrent uploads to the same conversation can't
@@ -58,14 +90,14 @@ async def upload_document(
     if file.content_type not in ("application/pdf", "application/x-pdf"):
         filename = file.filename or ""
         if not filename.lower().endswith(".pdf"):
-            raise ValueError("Only PDF files are supported.")
+            raise InvalidFileTypeError("Only PDF files are supported.")
 
     # Read file content
     content = await file.read()
 
     # Validate file size
     if len(content) > settings.max_upload_size:
-        raise ValueError(
+        raise FileTooLargeError(
             f"File too large. Maximum size is {settings.max_upload_size // (1024 * 1024)}MB."
         )
 

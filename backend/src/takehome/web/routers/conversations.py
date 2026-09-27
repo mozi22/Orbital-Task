@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from takehome.db.models import Conversation
 from takehome.db.session import get_session
 from takehome.services.conversation import (
     create_conversation,
@@ -33,17 +34,6 @@ class ConversationListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ConversationDetail(BaseModel):
-    id: str
-    title: str
-    created_at: datetime
-    updated_at: datetime
-    has_document: bool
-    document: DocumentInfo | None = None
-
-    model_config = {"from_attributes": True}
-
-
 class DocumentInfo(BaseModel):
     id: str
     filename: str
@@ -54,12 +44,36 @@ class DocumentInfo(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ConversationDetail(BaseModel):
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    has_document: bool
+    documents: list[DocumentInfo] = []
+
+    model_config = {"from_attributes": True}
+
+
 class ConversationCreate(BaseModel):
     pass
 
 
 class ConversationUpdate(BaseModel):
     title: str
+
+
+def _build_conversation_detail(conversation: Conversation) -> ConversationDetail:
+    """Build a ConversationDetail from a Conversation with its documents loaded."""
+    documents = [DocumentInfo.model_validate(doc) for doc in conversation.documents]
+    return ConversationDetail(
+        id=conversation.id,
+        title=conversation.title,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        has_document=len(documents) > 0,
+        documents=documents,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -91,14 +105,7 @@ async def create_conversation_endpoint(
 ) -> ConversationDetail:
     """Create a new conversation."""
     conversation = await create_conversation(session)
-    return ConversationDetail(
-        id=conversation.id,
-        title=conversation.title,
-        created_at=conversation.created_at,
-        updated_at=conversation.updated_at,
-        has_document=False,
-        document=None,
-    )
+    return _build_conversation_detail(conversation)
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
@@ -111,18 +118,7 @@ async def get_conversation_endpoint(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    doc_info: DocumentInfo | None = None
-    if conversation.documents:
-        doc_info = DocumentInfo.model_validate(conversation.documents[0])
-
-    return ConversationDetail(
-        id=conversation.id,
-        title=conversation.title,
-        created_at=conversation.created_at,
-        updated_at=conversation.updated_at,
-        has_document=doc_info is not None,
-        document=doc_info,
-    )
+    return _build_conversation_detail(conversation)
 
 
 @router.patch("/{conversation_id}", response_model=ConversationDetail)
@@ -136,18 +132,7 @@ async def update_conversation_endpoint(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    doc_info: DocumentInfo | None = None
-    if conversation.documents:
-        doc_info = DocumentInfo.model_validate(conversation.documents[0])
-
-    return ConversationDetail(
-        id=conversation.id,
-        title=conversation.title,
-        created_at=conversation.created_at,
-        updated_at=conversation.updated_at,
-        has_document=doc_info is not None,
-        document=doc_info,
-    )
+    return _build_conversation_detail(conversation)
 
 
 @router.delete("/{conversation_id}", status_code=204)
