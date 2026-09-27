@@ -248,30 +248,6 @@ async def update_document(
     return document
 
 
-async def rename_document(
-    session: AsyncSession, document_id: str, display_name: str
-) -> Document | None:
-    """Update a document's user-facing `display_name`.
-
-    Thin convenience wrapper over `update_document` for the single-field
-    rename case (kept for callers -- and tests -- that only ever touch
-    `display_name`). See `update_document` for the full contract.
-    """
-    return await update_document(session, document_id, display_name=display_name)
-
-
-async def set_document_type(
-    session: AsyncSession, document_id: str, document_type: DocumentType | None
-) -> Document | None:
-    """Correct a document's `document_type` classification (see #33).
-
-    Thin convenience wrapper over `update_document` for the single-field
-    case (kept for callers -- and tests -- that only ever touch
-    `document_type`). See `update_document` for the full contract.
-    """
-    return await update_document(session, document_id, document_type=document_type)
-
-
 async def get_documents_for_conversation(
     session: AsyncSession, conversation_id: str
 ) -> list[Document]:
