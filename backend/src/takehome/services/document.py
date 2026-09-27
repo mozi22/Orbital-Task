@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.config import settings
 from takehome.db.models import Conversation, Document
+from takehome.services.llm import classify_document_type
 
 logger = structlog.get_logger()
 
@@ -154,6 +155,19 @@ async def upload_document(
         text_length=len(extracted_text),
     )
 
+    # Classify the document (title/lease/environmental/other) via an LLM call
+    # so every upload gets a sensible default `document_type` a solicitor can
+    # correct later, rather than requiring manual tagging (see issue #32).
+    # Applies to every upload across the app, since this is the single
+    # upload path shared by all callers.
+    document_type = await classify_document_type(extracted_text)
+
+    logger.info(
+        "Classified document",
+        filename=original_filename,
+        document_type=document_type.value,
+    )
+
     # Create the document record
     document = Document(
         conversation_id=conversation_id,
@@ -162,6 +176,7 @@ async def upload_document(
         file_path=file_path,
         extracted_text=extracted_text if extracted_text else None,
         page_count=page_count,
+        document_type=document_type,
     )
     session.add(document)
     await session.commit()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Iterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -14,10 +14,27 @@ SAMPLE_PDF_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "sample-docs", "title-report-lot-7.pdf"
 )
 
+# All three of the project's real fixture PDFs, one per non-"other"
+# `document_type` -- used by the upload-classification integration test (see
+# issue #32's acceptance criteria) so it exercises the actual extraction +
+# classification pipeline against real files rather than synthetic text.
+SAMPLE_DOCS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "sample-docs")
+SAMPLE_TITLE_PDF_PATH = os.path.join(SAMPLE_DOCS_DIR, "title-report-lot-7.pdf")
+SAMPLE_LEASE_PDF_PATH = os.path.join(SAMPLE_DOCS_DIR, "commercial-lease-100-bishopsgate.pdf")
+SAMPLE_ENVIRONMENTAL_PDF_PATH = os.path.join(
+    SAMPLE_DOCS_DIR, "environmental-assessment-manchester.pdf"
+)
+
 
 def read_sample_pdf_bytes() -> bytes:
     """Read the shared sample PDF's raw bytes."""
     with open(SAMPLE_PDF_PATH, "rb") as f:
+        return f.read()
+
+
+def read_pdf_bytes(path: str) -> bytes:
+    """Read an arbitrary fixture PDF's raw bytes."""
+    with open(path, "rb") as f:
         return f.read()
 
 
@@ -33,8 +50,12 @@ os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 # (it is never actually called in these tests). A placeholder is enough.
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-placeholder-key")
 
-from takehome.db.models import Base  # noqa: E402
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart  # noqa: E402
+from pydantic_ai.models.function import AgentInfo, FunctionModel  # noqa: E402
+
+from takehome.db.models import Base, DocumentType  # noqa: E402
 from takehome.db.session import get_session, get_session_factory  # noqa: E402
+from takehome.services.llm import classification_agent  # noqa: E402
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
 TestSessionLocal = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
@@ -48,6 +69,40 @@ async def _reset_database() -> AsyncGenerator[None, None]:
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+
+
+def make_classification_stub(
+    document_type: DocumentType,
+) -> Callable[[list[ModelMessage], AgentInfo], ModelResponse]:
+    """Build a `FunctionModel` function that always returns `document_type`
+    as `classification_agent`'s structured output. Shared with
+    `tests/services/test_document.py`'s upload-classification tests so both
+    modules build the stub the same way."""
+
+    def _fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        tool = info.output_tools[0]
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=tool.name, args={"response": document_type.value})]
+        )
+
+    return _fn
+
+
+@pytest.fixture(autouse=True)
+def _stub_document_classification() -> Iterator[None]:
+    """Default every test's `upload_document` calls to a stubbed, no-network
+    classification (`DocumentType.OTHER`) so the suite never depends on a
+    real Anthropic call. Tests that care about classification specifically
+    (see `tests/services/test_llm.py` and
+    `tests/services/test_document.py`'s upload-classification tests) layer
+    their own `classification_agent.override(...)` inside the test body,
+    which -- as an inner context manager -- takes precedence over this outer
+    default.
+    """
+    with classification_agent.override(
+        model=FunctionModel(make_classification_stub(DocumentType.OTHER))
+    ):
+        yield
 
 
 @pytest.fixture
