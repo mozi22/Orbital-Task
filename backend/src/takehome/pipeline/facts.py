@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,6 +96,22 @@ async def save_facts(
     one extractor's save call never deletes another document type's facts
     for the same Matter.
 
+    The upsert statement itself carries a `RETURNING` clause, so the rows
+    this function returns come back in the *same* round trip -- and the
+    same transaction -- as the write itself. A separate follow-up
+    `select()` after `commit()` was tried first, but that runs in its own
+    transaction: under the exact concurrent-same-key race this function
+    exists to handle, caller A's post-commit select can land after caller
+    B's concurrent upsert has *also* committed in between, so A's select
+    would silently return B's values under A's own key instead of what A
+    itself just wrote. `RETURNING` on the `INSERT ... ON CONFLICT DO
+    UPDATE` statement sidesteps that window entirely: Postgres documents
+    `RETURNING` on an upsert as reflecting the row as it exists *after*
+    the conflict resolution (i.e. the post-update values on the conflict
+    branch, not the originally-attempted insert values), so what's
+    returned here is guaranteed to be exactly what this call itself
+    persisted.
+
     Commits its own transaction, consistent with every other write in this
     codebase's service layer (see `services.matter.get_or_create_matter`'s
     own docstring for the same convention and its trade-offs).
@@ -129,22 +145,8 @@ async def save_facts(
             "status": stmt.excluded.status,
             "updated_at": func.now(),
         },
-    )
-    await session.execute(stmt)
-    await session.commit()
-
-    # A single follow-up select for every row in this batch, rather than a
-    # sequential `session.refresh()` per row -- `services.conversation.
-    # create_conversation`'s own precedent already establishes that this
-    # codebase relies on Postgres populating timestamp columns rather than
-    # refreshing each row individually; an `ON CONFLICT DO UPDATE` upsert
-    # can't use a plain client-side `RETURNING` from an ORM `INSERT` the way
-    # a simple insert can (the updated branch's timestamps are DB-computed
-    # via `func.now()` above), so one batched select is the equivalent
-    # single-round-trip fetch for this shape of write.
-    keys = [f.key for f in facts]
-    result = await session.execute(
-        select(Fact).where(Fact.matter_id == matter_id, Fact.key.in_(keys))
-    )
+    ).returning(Fact)
+    result = await session.execute(stmt)
     rows_by_key = {row.key: row for row in result.scalars().all()}
+    await session.commit()
     return [rows_by_key[f.key] for f in facts]

@@ -223,6 +223,52 @@ async def test_concurrent_save_facts_calls_for_the_same_keys_do_not_race(
     assert rows[0].value in ("Acme Ltd", "Acme Holdings Ltd")
 
 
+async def test_concurrent_save_facts_calls_each_return_their_own_written_value(
+    session: AsyncSession,
+) -> None:
+    """Two concurrent `save_facts` calls writing the *same* key must each get
+    back the `Fact` reflecting *their own* write, never a sibling caller's
+    values for the same key.
+
+    This is a stronger assertion than
+    `test_concurrent_save_facts_calls_for_the_same_keys_do_not_race`'s "no
+    exception, one surviving row" check: that test only inspects final DB
+    state via a fresh `select` after both writers are done, so it can't
+    catch a caller's own *return value* being wrong even when the database
+    ends up consistent. It would not have caught the bug where `save_facts`
+    committed its upsert and then ran a separate follow-up `select()` in a
+    new transaction -- under this exact same-key race, caller A's follow-up
+    select could return caller B's just-committed row instead of A's own
+    write, even though the database itself was never corrupted. Using
+    `RETURNING` directly on the upsert statement (same round trip, same
+    transaction as the write) closes that window: whatever Postgres returns
+    for a given call is guaranteed to be exactly what that call wrote.
+    """
+    matter_id = await _make_matter(session)
+
+    async def _save(value: str) -> Fact:
+        async with TestSessionLocal() as own_session:
+            saved = await save_facts(
+                own_session,
+                matter_id,
+                [
+                    ExtractedFact(
+                        key="lease.landlord.name",
+                        value=value,
+                        sources=[],
+                        confidence=0.9,
+                        status=FactStatus.EXTRACTED,
+                    )
+                ],
+            )
+            return saved[0]
+
+    result_a, result_b = await asyncio.gather(_save("Acme Ltd"), _save("Acme Holdings Ltd"))
+
+    assert result_a.value == "Acme Ltd"
+    assert result_b.value == "Acme Holdings Ltd"
+
+
 async def test_extracted_lease_facts_can_be_saved_end_to_end(session: AsyncSession) -> None:
     """Sanity check that `extract_lease_core_terms`'s output is directly
     consumable by `save_facts` -- the two modules' contracts actually line
