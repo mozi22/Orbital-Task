@@ -4,6 +4,7 @@ import type {
 	Document,
 	DocumentType,
 	Message,
+	RiskReviewTrigger,
 } from "../types";
 
 const BASE = "/api";
@@ -189,4 +190,23 @@ export async function updateDocumentType(
 
 export function getDocumentUrl(documentId: string): string {
 	return `${BASE}/documents/${documentId}/content`;
+}
+
+/**
+ * Triggers a risk-review run for a conversation
+ * (`POST /api/conversations/{id}/risk-review` —
+ * backend/src/takehome/web/routers/risk_review.py). Creates the
+ * conversation's `Matter` if this is the first run, otherwise re-runs
+ * against whichever documents are currently attached. The actual pipeline
+ * work happens in a background job on the server; this call only reports
+ * that the run was accepted and started.
+ */
+export async function triggerRiskReview(
+	conversationId: string,
+): Promise<RiskReviewTrigger> {
+	const res = await fetch(
+		`${BASE}/conversations/${conversationId}/risk-review`,
+		{ method: "POST" },
+	);
+	return handleResponse<RiskReviewTrigger>(res);
 }
