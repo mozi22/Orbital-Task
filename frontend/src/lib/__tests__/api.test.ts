@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	ApiError,
 	renameDocument,
+	triggerRiskReview,
 	updateDocumentType,
 	uploadDocument,
 } from "../api";
@@ -187,5 +188,52 @@ describe("updateDocumentType", () => {
 		await expect(
 			updateDocumentType("does-not-exist", "lease"),
 		).rejects.toBeInstanceOf(ApiError);
+	});
+});
+
+describe("triggerRiskReview", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("POSTs to the conversation's risk-review endpoint and returns the run id/status", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(202, {
+				run_id: "matter-1",
+				status: "running",
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await triggerRiskReview("conv-1");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/conversations/conv-1/risk-review",
+			expect.objectContaining({ method: "POST" }),
+		);
+		expect(result).toEqual({ run_id: "matter-1", status: "running" });
+	});
+
+	it("throws an ApiError carrying the backend's code when the conversation doesn't exist", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				jsonResponse(404, {
+					detail: {
+						code: "conversation_not_found",
+						message: "Conversation not found",
+					},
+				}),
+			),
+		);
+
+		await expect(triggerRiskReview("does-not-exist")).rejects.toMatchObject({
+			code: "conversation_not_found",
+			message: "Conversation not found",
+			status: 404,
+		});
+		await expect(triggerRiskReview("does-not-exist")).rejects.toBeInstanceOf(
+			ApiError,
+		);
 	});
 });

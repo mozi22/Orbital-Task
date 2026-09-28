@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from datetime import datetime
 
@@ -21,6 +20,7 @@ from takehome.services.llm import (
     count_sources_cited,
     generate_title,
 )
+from takehome.web.sse import sse_event, sse_response
 
 logger = structlog.get_logger()
 
@@ -152,8 +152,7 @@ async def send_message(
                 conversation_history=conversation_history,
             ):
                 full_response += chunk
-                event_data = json.dumps({"type": "content", "content": chunk})
-                yield f"data: {event_data}\n\n"
+                yield sse_event({"type": "content", "content": chunk})
 
         except Exception:
             logger.exception(
@@ -162,8 +161,7 @@ async def send_message(
             )
             error_msg = "I'm sorry, an error occurred while generating a response. Please try again."
             full_response = error_msg
-            event_data = json.dumps({"type": "content", "content": error_msg})
-            yield f"data: {event_data}\n\n"
+            yield sse_event({"type": "content", "content": error_msg})
 
         # Count sources cited in the full response
         sources = count_sources_cited(full_response)
@@ -200,7 +198,7 @@ async def send_message(
                     )
 
             # Send the final message event with the complete assistant message
-            message_data = json.dumps(
+            yield sse_event(
                 {
                     "type": "message",
                     "message": {
@@ -213,24 +211,14 @@ async def send_message(
                     },
                 }
             )
-            yield f"data: {message_data}\n\n"
 
             # Send the done signal
-            done_data = json.dumps(
+            yield sse_event(
                 {
                     "type": "done",
                     "sources_cited": sources,
                     "message_id": assistant_message.id,
                 }
             )
-            yield f"data: {done_data}\n\n"
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_response(event_stream())

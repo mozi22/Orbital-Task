@@ -3,10 +3,8 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
-from typing import Any
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -29,25 +27,6 @@ def _document_type_values(enum_cls: type[DocumentType]) -> list[str]:
     """Store each member's lowercase `.value` (e.g. "title") as the Postgres
     enum's label, rather than SQLAlchemy's default of `.name` (e.g. "TITLE").
     """
-    return [member.value for member in enum_cls]
-
-
-class FactStatus(enum.StrEnum):
-    """Status of one extracted `Fact`, per the requirements doc's Fact
-    wrapper (section 7): `extracted` (found with usable confidence),
-    `needs_checking` (found but confidence below the 0.7 threshold, or a
-    value that failed normalisation), `not_found` (a real, meaningful
-    answer -- many risks come from something being absent), or
-    `edited_by_user` (a solicitor corrected the extracted value).
-    """
-
-    EXTRACTED = "extracted"
-    NEEDS_CHECKING = "needs_checking"
-    NOT_FOUND = "not_found"
-    EDITED_BY_USER = "edited_by_user"
-
-
-def _fact_status_values(enum_cls: type[FactStatus]) -> list[str]:
     return [member.value for member in enum_cls]
 
 
@@ -150,49 +129,66 @@ class Matter(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     conversation: Mapped[Conversation] = relationship(back_populates="matter")
-    facts: Mapped[list[Fact]] = relationship(
-        back_populates="matter", cascade="all, delete-orphan"
-    )
+    facts: Mapped[list[Fact]] = relationship(back_populates="matter", cascade="all, delete-orphan")
 
 
 class Fact(Base):
-    """One extracted fact belonging to a Matter's risk review.
+    """One extracted fact for a Matter (see the Milestone 2 PRD's data model
+    and the requirements doc's "Extracted facts data model", section 7).
 
-    Shared, document-type-agnostic scaffolding: every fact-extraction stage
-    (title, lease, environmental -- see the Milestone 2 PRD's section 4 data
-    model) writes rows to this same table, keyed by a dotted `key` (e.g.
-    `lease.breaks`, `lease.security_of_tenure`) rather than one column per
-    field, so adding a new extracted field never requires a schema change.
+    Shared across every document type's extraction stage (title, lease,
+    environmental -- see issues #39/#40/#42 alongside this one): each row is
+    one dotted `key` (e.g. `environmental.report_reference`,
+    `lease.landlord`), not one row per document-type-specific column, so the
+    facts table doesn't need reshaping every time a new document type or
+    field is added. `value`, `normalised_value` and `source` are stored as
+    JSON-encoded text (mirroring the PRD's "facts and flags stored as JSON
+    columns plus key indexed fields" suggestion, and this project's existing
+    convention of plain `Text`/`String` columns over Postgres-native JSON,
+    e.g. `Matter.gate_result`) rather than typed columns, since `value` is
+    genuinely `any` per the requirements doc (a string, a number, a list of
+    objects, ...) depending on which `key` it is.
 
-    Mirrors the requirements doc's Fact wrapper (section 7): `value` is the
-    value as written in the document, `normalised_value` is its
-    machine-comparable form (ISO date, standardised company name, etc. --
-    only populated where normalisation is meaningful for that field's
-    shape), `sources` is a JSON array of SourceSpan-shaped objects (at least
-    one, always), `confidence` is 0-1, and `status` tracks whether the value
-    was actually found.
+    `source` deliberately has no character-offset fields -- the Milestone 2
+    PRD notes the assignment's own simplified `Source` model omits them
+    (text-highlighting a PDF page is explicitly out of scope this
+    milestone), so only document/page/clause/quote are kept.
     """
 
     __tablename__ = "facts"
 
-    id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: uuid.uuid4().hex[:16]
-    )
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:16])
     matter_id: Mapped[str] = mapped_column(ForeignKey("matters.id", ondelete="CASCADE"))
+    # Dotted field name, e.g. "environmental.report_reference",
+    # "environmental.historical_uses". Not unique alone -- a fact can be
+    # re-extracted on a pipeline re-run (see the requirements doc's
+    # "Re-runs" section), and this table keeps every row rather than
+    # upserting in place.
     key: Mapped[str] = mapped_column(String)
-    value: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
-    normalised_value: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    # As written in the document, JSON-encoded (a bare JSON string for a
+    # scalar, e.g. '"Flood Zone 2"', or a JSON array of objects for a
+    # list-shaped fact, e.g. `historical_uses`).
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Machine-comparable form (ISO date, integer pence, m^2, standardised
+    # company name -- see `takehome.pipeline.normalise`), JSON-encoded the
+    # same way as `value`. Null whenever no normalisation applies to this
+    # key, or normalisation failed (see `status`).
+    normalised_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # e.g. "GBP", "m2", "sq ft" -- null when the fact has no natural unit.
     unit: Mapped[str | None] = mapped_column(String, nullable=True)
-    sources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    # SourceSpan[] (JSON array of {document_id, pdf_page_index, clause_ref,
+    # quote}), at least one entry whenever `status` isn't "not_found".
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float] = mapped_column(Float)
-    status: Mapped[FactStatus] = mapped_column(
-        Enum(
-            FactStatus,
-            name="fact_status",
-            native_enum=True,
-            values_callable=_fact_status_values,
-        )
-    )
+    # found | not_found | needs_checking (see the Milestone 2 PRD's data
+    # model) -- kept as a plain string, not a DB enum, matching this
+    # schema's existing convention for similarly-constrained columns (e.g.
+    # `Matter.gate_result`, `Message.role`). Validated in application code by
+    # `takehome.services.fact`, not at the database level.
+    status: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     matter: Mapped[Matter] = relationship(back_populates="facts")
+
+
+Index("ix_facts_matter_id_key", Fact.__table__.c.matter_id, Fact.__table__.c.key)

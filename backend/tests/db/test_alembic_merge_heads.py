@@ -43,15 +43,14 @@ def test_upgrade_to_head_succeeds_from_a_fresh_database(reset_schema) -> None:
     previously raised `alembic.util.exc.CommandError: Multiple head
     revisions are present`.
 
-    Asserts against the script directory's actual current head rather than
-    hardcoding `004_merge_heads`, since later migrations (e.g. `005_facts`)
-    legitimately move `head` forward without reopening the ambiguity this
-    test guards against."""
+    Upgrades to `004_merge_heads` specifically (not `"head"`): this test is
+    scoped to the merge revision itself resolving cleanly, not to whatever
+    the schema's true head happens to be after later migrations (e.g. #41's
+    `005_facts`) land on top of it.
+    """
     cfg = reset_schema
-    script = ScriptDirectory.from_config(cfg)
-    expected_head = script.get_heads()[0]
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "004_merge_heads")
 
     async def _current_revision() -> str | None:
         engine = create_async_engine(settings.database_url)
@@ -64,7 +63,7 @@ def test_upgrade_to_head_succeeds_from_a_fresh_database(reset_schema) -> None:
             await engine.dispose()
 
     current = asyncio.run(_current_revision())
-    assert current == expected_head
+    assert current == "004_merge_heads"
 
 
 def test_merge_migration_makes_no_schema_changes_of_its_own(reset_schema) -> None:
@@ -72,9 +71,8 @@ def test_merge_migration_makes_no_schema_changes_of_its_own(reset_schema) -> Non
     tables/columns of its own, and downgrading past it removes nothing that
     `003_document_type`/`003_matters` didn't already own.
 
-    Upgrades to `004_merge_heads` specifically, not `head` -- later
-    migrations (e.g. `005_facts`) legitimately add schema after this merge
-    point, which isn't what this test is about."""
+    Upgrades to `004_merge_heads` specifically (not `"head"`), for the same
+    reason as `test_upgrade_to_head_succeeds_from_a_fresh_database` above."""
     cfg = reset_schema
     command.upgrade(cfg, "003_document_type")
     command.upgrade(cfg, "003_matters")

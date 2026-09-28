@@ -21,12 +21,19 @@ from pydantic_ai import Agent
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.config import settings  # noqa: F401 — triggers ANTHROPIC_API_KEY export
-from takehome.db.models import Fact, FactStatus
+from takehome.db.models import Fact
 from takehome.pipeline.lease_remaining_terms import (
     FACT_KEYS,
     ExtractedFact,
     LeaseRemainingTermsExtraction,
     normalise_lease_remaining_terms_value,
+)
+from takehome.services.fact import (
+    FactStatus,
+    NewFact,
+    NewFactSource,
+    compute_status,
+    create_facts,
 )
 
 logger = structlog.get_logger()
@@ -94,44 +101,47 @@ async def extract_lease_remaining_terms(text: str) -> LeaseRemainingTermsExtract
     return result.output
 
 
-# Confidence below this threshold is marked "needs checking" for solicitor
-# review, per the requirements doc's Fact wrapper (section 7).
-CONFIDENCE_NEEDS_CHECKING_THRESHOLD = 0.7
-
-
 def _status_for(extracted: ExtractedFact[object], normalisation_ok: bool) -> FactStatus:
-    """`not_found` is a real answer (per the requirements doc), so it's
-    reported before -- and regardless of -- confidence. Otherwise, either a
-    below-threshold confidence or a normalisation failure (e.g. an
-    unparseable break date) demotes the fact to `needs_checking`, since
-    both are equally a reason a solicitor should double-check the value."""
-    if not extracted.found:
-        return FactStatus.NOT_FOUND
-    if extracted.confidence < CONFIDENCE_NEEDS_CHECKING_THRESHOLD or not normalisation_ok:
-        return FactStatus.NEEDS_CHECKING
-    return FactStatus.EXTRACTED
+    """Delegates to the shared `compute_status` (`takehome.services.fact`):
+    a `not_found` value is reported before -- and regardless of --
+    confidence, and either a below-threshold confidence or a normalisation
+    failure (e.g. an unparseable break date) demotes the fact to
+    `needs_checking`, since both are equally a reason a solicitor should
+    double-check the value."""
+    return compute_status(
+        value=extracted.value,
+        confidence=extracted.confidence,
+        normalisation_failed=not normalisation_ok,
+    )
 
 
 def build_lease_remaining_terms_facts(
-    *, matter_id: str, document_id: str, extraction: LeaseRemainingTermsExtraction
-) -> list[Fact]:
-    """Turn one extraction result into the `Fact` rows it persists as --
-    one row per field (see `FACT_KEYS`, keyed by field name -- never by
-    position), each carrying its raw value, normalised value (where
-    normalisation applies), sources (with `document_id` filled in, since
-    the LLM call itself never sees it), a confidence score and a status.
-    Doesn't touch the database itself -- see
-    `extract_and_save_lease_remaining_terms` for that."""
-    facts: list[Fact] = []
+    *, document_id: str, extraction: LeaseRemainingTermsExtraction
+) -> list[NewFact]:
+    """Turn one extraction result into the `NewFact`s it persists as -- one
+    per field (see `FACT_KEYS`, keyed by field name -- never by position),
+    each carrying its raw value, normalised value (where normalisation
+    applies), sources (with `document_id` filled in, since the LLM call
+    itself never sees it), a confidence score and a status. Doesn't touch
+    the database itself -- see `extract_and_save_lease_remaining_terms` for
+    that."""
+    facts: list[NewFact] = []
     for field_name, key in FACT_KEYS.items():
         extracted: ExtractedFact[object] = getattr(extraction, field_name)
         dumped = extracted.model_dump(mode="json")
-        sources = [{**source, "document_id": document_id} for source in dumped["sources"]]
+        sources = [
+            NewFactSource(
+                document_id=document_id,
+                pdf_page_index=source["pdf_page_index"],
+                quote=source["quote"],
+                clause_ref=source.get("clause_ref"),
+            )
+            for source in dumped["sources"]
+        ]
         normalised = normalise_lease_remaining_terms_value(key, extracted.value)
 
         facts.append(
-            Fact(
-                matter_id=matter_id,
+            NewFact(
                 key=key,
                 value=dumped["value"],
                 normalised_value=normalised.normalised_value,
@@ -150,18 +160,13 @@ async def extract_and_save_lease_remaining_terms(
     """Extract the lease's remaining terms from `text` and persist them as
     `Fact` rows against `matter_id`, attributed to `document_id`."""
     extraction = await extract_lease_remaining_terms(text)
-    facts = build_lease_remaining_terms_facts(
-        matter_id=matter_id, document_id=document_id, extraction=extraction
-    )
-    session.add_all(facts)
-    await session.commit()
-    for fact in facts:
-        await session.refresh(fact)
+    facts = build_lease_remaining_terms_facts(document_id=document_id, extraction=extraction)
+    saved = await create_facts(session, matter_id, facts)
 
     logger.info(
         "Extracted and saved lease remaining-terms facts",
         matter_id=matter_id,
         document_id=document_id,
-        fact_count=len(facts),
+        fact_count=len(saved),
     )
-    return facts
+    return saved
