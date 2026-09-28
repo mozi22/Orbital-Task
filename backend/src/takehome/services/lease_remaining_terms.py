@@ -116,13 +116,14 @@ def build_lease_remaining_terms_facts(
     *, matter_id: str, document_id: str, extraction: LeaseRemainingTermsExtraction
 ) -> list[Fact]:
     """Turn one extraction result into the `Fact` rows it persists as --
-    one row per field (see `FACT_KEYS`), each carrying its raw value,
-    normalised value (where normalisation applies), sources (with
-    `document_id` filled in, since the LLM call itself never sees it), a
-    confidence score and a status. Doesn't touch the database itself -- see
+    one row per field (see `FACT_KEYS`, keyed by field name -- never by
+    position), each carrying its raw value, normalised value (where
+    normalisation applies), sources (with `document_id` filled in, since
+    the LLM call itself never sees it), a confidence score and a status.
+    Doesn't touch the database itself -- see
     `extract_and_save_lease_remaining_terms` for that."""
     facts: list[Fact] = []
-    for key, field_name in zip(FACT_KEYS, LeaseRemainingTermsExtraction.model_fields, strict=True):
+    for field_name, key in FACT_KEYS.items():
         extracted: ExtractedFact[object] = getattr(extraction, field_name)
         dumped = extracted.model_dump(mode="json")
         sources = [{**source, "document_id": document_id} for source in dumped["sources"]]

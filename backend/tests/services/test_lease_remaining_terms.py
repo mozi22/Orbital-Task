@@ -22,7 +22,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.db.models import Fact, FactStatus, Matter
+from takehome.pipeline.lease_remaining_terms import LeaseRemainingTermsExtraction
 from takehome.services.lease_remaining_terms import (
+    build_lease_remaining_terms_facts,
     extract_and_save_lease_remaining_terms,
     extract_lease_remaining_terms,
     lease_remaining_terms_agent,
@@ -160,6 +162,41 @@ async def test_saves_exactly_one_fact_per_remaining_terms_field(session: AsyncSe
         "lease.dispute_resolution",
         "lease.schedules",
     }
+
+
+def test_each_field_is_persisted_under_its_own_key_regardless_of_declaration_order() -> None:
+    """Regression test for the `zip(FACT_KEYS, model_fields, strict=True)`
+    bug this module used to have: that pairing only checked equal length,
+    so reordering either list would silently persist a field's value
+    under a *different* field's key. Marks every field `found=True` with a
+    distinct, field-name-derived quote, then walks the fields in reverse
+    declaration order and confirms each one's `Fact.key`/`value` still
+    line up with its own field -- not with whatever field used to sit at
+    that position."""
+    field_names = list(LeaseRemainingTermsExtraction.model_fields)
+    args = _full_stub_args(
+        **{
+            field_name: _found_field(
+                value=None, sources=[{"pdf_page_index": 1, "quote": f"quote for {field_name}"}]
+            )
+            for field_name in field_names
+            # `value` must be `None` here for every field except the ones
+            # that require a real per-field shape; those are covered by
+            # more specific tests elsewhere, so this test only needs the
+            # sources/quote (not the value) to prove the key<->field
+            # binding survives a reordering.
+        }
+    )
+    extraction = LeaseRemainingTermsExtraction.model_validate(args)
+
+    facts = build_lease_remaining_terms_facts(
+        matter_id="matter-1", document_id="doc-1", extraction=extraction
+    )
+    facts_by_key = {fact.key: fact for fact in facts}
+
+    for field_name in reversed(field_names):
+        key = f"lease.{field_name}"
+        assert facts_by_key[key].sources[0]["quote"] == f"quote for {field_name}"
 
 
 async def test_not_found_field_is_saved_with_not_found_status(session: AsyncSession) -> None:

@@ -141,19 +141,22 @@ class LeaseRemainingTermsExtraction(BaseModel):
 
 
 # The `Fact.key` this extraction persists each field under (see
-# `services.lease_remaining_terms`), in the same order as the model above.
-FACT_KEYS: tuple[str, ...] = (
-    "lease.breaks",
-    "lease.permitted_use",
-    "lease.alienation",
-    "lease.repair",
-    "lease.service_charge",
-    "lease.insurance",
-    "lease.indemnities",
-    "lease.security_of_tenure",
-    "lease.dispute_resolution",
-    "lease.schedules",
-)
+# `services.lease_remaining_terms`), keyed by the extraction model's field
+# name -- an explicit mapping, not a positional list, so persistence can
+# never silently mismatch a field to the wrong key if either this mapping
+# or `LeaseRemainingTermsExtraction`'s field order ever changes.
+FACT_KEYS: dict[str, str] = {
+    "breaks": "lease.breaks",
+    "permitted_use": "lease.permitted_use",
+    "alienation": "lease.alienation",
+    "repair": "lease.repair",
+    "service_charge": "lease.service_charge",
+    "insurance": "lease.insurance",
+    "indemnities": "lease.indemnities",
+    "security_of_tenure": "lease.security_of_tenure",
+    "dispute_resolution": "lease.dispute_resolution",
+    "schedules": "lease.schedules",
+}
 
 
 # =============================================================================
