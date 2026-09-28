@@ -30,8 +30,6 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from takehome.config import settings  # noqa: F401 -- triggers ANTHROPIC_API_KEY export
-from takehome.db.models import FactStatus
-from takehome.pipeline.facts import NEEDS_CHECKING_CONFIDENCE_THRESHOLD, ExtractedFact, SourceSpan
 from takehome.pipeline.normalise import (
     NormalisationError,
     NormalisedArea,
@@ -40,6 +38,7 @@ from takehome.pipeline.normalise import (
     normalise_date,
     normalise_money,
 )
+from takehome.services.fact import NewFact, NewFactSource, compute_status
 
 logger = structlog.get_logger()
 
@@ -199,34 +198,35 @@ def _to_fact(
     *,
     normaliser: Callable[[Any], Any] | None = None,
     unit: str | None = None,
-) -> ExtractedFact:
-    """Turn one extracted field into an `ExtractedFact`, applying
-    normalisation and the confidence/needs-checking status rules shared by
-    every field this extractor produces."""
+) -> NewFact:
+    """Turn one extracted field into a `NewFact`, applying normalisation and
+    the shared confidence/needs-checking status rules (`compute_status`,
+    `takehome.services.fact`) every field this extractor produces relies
+    on."""
     if field.value is None:
-        return ExtractedFact(
+        return NewFact(
             key=key,
             value=None,
             normalised_value=None,
             unit=None,
             sources=[],
             confidence=field.confidence,
-            status=FactStatus.NOT_FOUND,
+            status=compute_status(value=None, confidence=field.confidence, normalisation_failed=False),
         )
 
-    sources: list[SourceSpan] = []
+    sources: list[NewFactSource] = []
     if field.quote and field.page is not None:
         sources = [
-            SourceSpan(
+            NewFactSource(
                 document_id=document_id,
                 pdf_page_index=field.page,
                 quote=field.quote[:500],
             )
         ]
 
-    status = FactStatus.EXTRACTED
     normalised_value: Any = field.value
     resolved_unit = unit
+    normalisation_failed = False
 
     if normaliser is not None:
         try:
@@ -238,7 +238,7 @@ def _to_fact(
                 raw_value=field.value,
             )
             normalised_value = None
-            status = FactStatus.NEEDS_CHECKING
+            normalisation_failed = True
 
     if isinstance(normalised_value, NormalisedArea):
         # `normalise_area` returns a `NormalisedArea` dataclass -- store it
@@ -252,10 +252,11 @@ def _to_fact(
             "unit": area.canonical_unit,
         }
 
-    if field.confidence < NEEDS_CHECKING_CONFIDENCE_THRESHOLD:
-        status = FactStatus.NEEDS_CHECKING
+    status = compute_status(
+        value=field.value, confidence=field.confidence, normalisation_failed=normalisation_failed
+    )
 
-    return ExtractedFact(
+    return NewFact(
         key=key,
         value=field.value,
         normalised_value=normalised_value,
@@ -266,41 +267,42 @@ def _to_fact(
     )
 
 
-def _to_list_fact(key: str, field: ListField, document_id: str) -> ExtractedFact:
+def _to_list_fact(key: str, field: ListField, document_id: str) -> NewFact:
     """Like `_to_fact`, but for a `ListField` whose individual items are
     each normalised as dates -- used for `rent.payment_dates` and
     `rent_review.dates`. An item that fails to normalise as a date is kept
     in the normalised list as `None` rather than dropping the whole fact to
     `needs_checking`, since the other items may still be perfectly good."""
     if not field.value:
-        return ExtractedFact(
+        return NewFact(
             key=key,
             value=None,
             normalised_value=None,
             sources=[],
             confidence=field.confidence,
-            status=FactStatus.NOT_FOUND,
+            status=compute_status(value=None, confidence=field.confidence, normalisation_failed=False),
         )
 
-    sources: list[SourceSpan] = []
+    sources: list[NewFactSource] = []
     if field.quote and field.page is not None:
         sources = [
-            SourceSpan(document_id=document_id, pdf_page_index=field.page, quote=field.quote[:500])
+            NewFactSource(document_id=document_id, pdf_page_index=field.page, quote=field.quote[:500])
         ]
 
-    status = FactStatus.EXTRACTED
     normalised: list[str | None] = []
+    normalisation_failed = False
     for item in field.value:
         try:
             normalised.append(normalise_date(item))
         except NormalisationError:
             normalised.append(None)
-            status = FactStatus.NEEDS_CHECKING
+            normalisation_failed = True
 
-    if field.confidence < NEEDS_CHECKING_CONFIDENCE_THRESHOLD:
-        status = FactStatus.NEEDS_CHECKING
+    status = compute_status(
+        value=field.value, confidence=field.confidence, normalisation_failed=normalisation_failed
+    )
 
-    return ExtractedFact(
+    return NewFact(
         key=key,
         value=field.value,
         normalised_value=normalised,
@@ -312,10 +314,11 @@ def _to_list_fact(key: str, field: ListField, document_id: str) -> ExtractedFact
 
 def flatten_lease_core_terms(
     extraction: LeaseCoreTermsExtraction, document_id: str
-) -> list[ExtractedFact]:
+) -> list[NewFact]:
     """Turn one structured extraction result into the flat list of
-    `ExtractedFact`s to persist, one per dotted `lease.*` key."""
-    facts: list[ExtractedFact] = [
+    `NewFact`s to persist (via `takehome.services.fact.create_facts`), one
+    per dotted `lease.*` key."""
+    facts: list[NewFact] = [
         _to_fact("lease.lease_date", extraction.lease_date, document_id, normaliser=normalise_date),
         _to_fact("lease.execution_status", extraction.execution_status, document_id),
         _to_fact("lease.is_dated", extraction.is_dated, document_id),
@@ -397,12 +400,12 @@ def flatten_lease_core_terms(
     return facts
 
 
-async def extract_lease_core_terms(text: str, document_id: str) -> list[ExtractedFact]:
+async def extract_lease_core_terms(text: str, document_id: str) -> list[NewFact]:
     """Extract this ticket's lease core-term facts from a lease's full
     extracted text, returning them ready to persist via
-    `takehome.pipeline.facts.save_facts`.
+    `takehome.services.fact.create_facts`.
 
-    `document_id` is stamped onto every fact's `SourceSpan` so later stages
+    `document_id` is stamped onto every fact's `NewFactSource` so later stages
     (the identity gate, rules, quote-verification) can trace a fact back to
     the document it came from.
     """

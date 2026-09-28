@@ -13,7 +13,6 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from takehome.db.models import FactStatus
 from takehome.pipeline.extract_lease_core_terms import (
     BoolField,
     LeaseCoreTermsExtraction,
@@ -149,7 +148,7 @@ async def test_extract_lease_core_terms_flattens_and_normalises(use_stub: None) 
     by_key = {f.key: f for f in facts}
 
     assert by_key["lease.lease_date"].normalised_value == "2024-01-01"
-    assert by_key["lease.lease_date"].status == FactStatus.EXTRACTED
+    assert by_key["lease.lease_date"].status == "found"
 
     assert by_key["lease.landlord.name"].normalised_value == "Bishopsgate Property Holdings Limited"
     assert by_key["lease.landlord.company_or_llp_number"].value == "05198234"
@@ -186,7 +185,7 @@ async def test_guarantor_not_found_has_no_sources(use_stub: None) -> None:
     by_key = {f.key: f for f in facts}
 
     guarantor_name = by_key["lease.guarantor.name"]
-    assert guarantor_name.status == FactStatus.NOT_FOUND
+    assert guarantor_name.status == "not_found"
     assert guarantor_name.value is None
     assert guarantor_name.sources == []
 
@@ -198,7 +197,7 @@ def test_low_confidence_marks_needs_checking() -> None:
     facts = flatten_lease_core_terms(extraction, DOCUMENT_ID)
     by_key = {f.key: f for f in facts}
 
-    assert by_key["lease.lease_date"].status == FactStatus.NEEDS_CHECKING
+    assert by_key["lease.lease_date"].status == "needs_checking"
     # A low-confidence fact still keeps its (successfully normalised) value.
     assert by_key["lease.lease_date"].normalised_value == "2024-01-01"
 
@@ -210,7 +209,7 @@ def test_unparseable_date_marks_needs_checking_with_no_normalised_value() -> Non
     facts = flatten_lease_core_terms(extraction, DOCUMENT_ID)
     by_key = {f.key: f for f in facts}
 
-    assert by_key["lease.lease_date"].status == FactStatus.NEEDS_CHECKING
+    assert by_key["lease.lease_date"].status == "needs_checking"
     assert by_key["lease.lease_date"].normalised_value is None
     assert by_key["lease.lease_date"].value == "not a real date"
 
@@ -227,7 +226,7 @@ def test_partially_unparseable_date_list_marks_whole_fact_needs_checking() -> No
     by_key = {f.key: f for f in facts}
 
     fact = by_key["lease.rent_review.dates"]
-    assert fact.status == FactStatus.NEEDS_CHECKING
+    assert fact.status == "needs_checking"
     assert fact.normalised_value == ["2029-01-01", None]
 
 
@@ -236,19 +235,18 @@ def test_every_field_not_found_produces_not_found_facts_with_no_crash() -> None:
     facts = flatten_lease_core_terms(extraction, DOCUMENT_ID)
 
     assert len(facts) == 24
-    assert all(f.status == FactStatus.NOT_FOUND for f in facts)
+    assert all(f.status == "not_found" for f in facts)
     assert all(f.sources == [] for f in facts)
 
 
 @pytest.mark.parametrize("confidence", [-0.1, 1.5, 5.0])
 def test_out_of_range_confidence_is_rejected_at_the_field_boundary(confidence: float) -> None:
-    """`TextField`/`BoolField`/`ListField.confidence` must carry the same
-    `ge=0.0, le=1.0` bound `ExtractedFact.confidence` already has -- without
+    """`TextField`/`BoolField`/`ListField.confidence` must reject an
+    out-of-range value at construction time (`ge=0.0, le=1.0`) -- without
     it, an out-of-range LLM-reported confidence would sail through field
-    construction and only blow up later inside `_to_fact`'s `ExtractedFact(
-    confidence=...)` call, crashing `flatten_lease_core_terms`'s entire
-    24-field batch instead of failing fast, close to the untrusted input, at
-    the schema boundary."""
+    construction and only surface later, deep inside `_to_fact`/
+    `compute_status`, instead of failing fast, close to the untrusted input,
+    at the schema boundary."""
     with pytest.raises(ValidationError):
         TextField(value="x", quote="q", page=1, confidence=confidence)
     with pytest.raises(ValidationError):

@@ -108,4 +108,4 @@ async def test_real_extraction_against_bishopsgate_lease_matches_eval_fixture() 
     assert by_key["lease.rent_review.upward_only"].normalised_value is True
 
     # V-04's premise (no guarantor named) -- a legitimate not_found case.
-    assert by_key["lease.guarantor.name"].status.value == "not_found"
+    assert by_key["lease.guarantor.name"].status == "not_found"
