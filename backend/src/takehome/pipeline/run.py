@@ -131,9 +131,15 @@ async def run_stub_pipeline(
                 rule_id=rule.rule_id,
             )
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as a terminal event
+        # Not re-raised: the client-facing failure signal is the `error`
+        # event published below (subscribers get it over SSE regardless of
+        # when they attached), and it's already logged here. Re-raising on
+        # top of that would only additionally surface as an unhandled
+        # exception in `BackgroundTasks`' own runner, which has no bearing
+        # on the request (the response was already sent) or on the client.
         logger.exception("Risk-review stub pipeline failed", matter_id=matter_id)
         publish_error(matter_id, str(exc))
-        raise
+        return
 
     publish_done(matter_id)
 

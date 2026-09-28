@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from typing import Literal
 
@@ -16,6 +15,7 @@ from takehome.pipeline.run import run_stub_pipeline
 from takehome.services.conversation import get_conversation
 from takehome.services.document import get_documents_for_conversation
 from takehome.services.matter import get_matter_by_id, get_or_create_matter
+from takehome.web.sse import sse_event, sse_response
 
 logger = structlog.get_logger()
 
@@ -129,14 +129,6 @@ async def stream_risk_review_progress(
 
     async def event_stream() -> AsyncIterator[str]:
         async for event in get_progress_broker().subscribe(run_id):
-            yield f"data: {json.dumps(event)}\n\n"
+            yield sse_event(event)
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_response(event_stream())

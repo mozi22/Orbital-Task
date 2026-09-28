@@ -27,15 +27,25 @@ tickets land, no rework needed as a stage moves from stub to real" (issue
 #38's acceptance criteria) true: a future ticket that replaces a stub stage
 with real extraction logic calls the exact same `publish_progress` at the
 same boundary, wrapped around now-real work instead of a synthetic loop.
+
+TODO(#38 follow-up): `ProgressBroker._buffers` never evicts -- every run's
+full event history is retained in memory for the lifetime of the process,
+even long after its terminal (`done`/`error`) event has been published and
+every subscriber has disconnected. Fine for a take-home's traffic, but a
+real deployment with many risk-review runs over time would want either a
+TTL (drop a run's buffer some time after its terminal event) or an LRU cap
+on the number of retained runs. Deferred rather than added speculatively
+here because the eviction policy interacts with `subscribe`'s "late
+attach still gets the full sequence" guarantee (an evicted run must look
+like "never ran" to a new subscriber, not like a truncated stream) in a way
+that deserves its own tests, not a bolt-on in this ticket.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any, Literal
-
-ProgressEvent = dict[str, Any]
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 # Event `type`s a subscriber can see on the stream. "done" and "error" are
 # both terminal -- once published, no further events for that run_id are
@@ -43,7 +53,39 @@ ProgressEvent = dict[str, Any]
 # yielding one.
 EventType = Literal["progress", "done", "error"]
 
-_TERMINAL_EVENT_TYPES: frozenset[str] = frozenset({"done", "error"})
+
+class ProgressStageEvent(TypedDict):
+    """A non-terminal "here's what's happening now" event (see
+    `publish_progress`). `document_id`/`rule_id` are the two extra
+    structured fields today's stub stages attach (one per stage boundary --
+    `extract` carries `document_id`, `gate`/`rules` carry `rule_id`); both
+    are optional because no single stage attaches both, and `classify`
+    attaches neither.
+    """
+
+    type: Literal["progress"]
+    stage: str
+    message: str
+    document_id: NotRequired[str]
+    rule_id: NotRequired[str]
+
+
+class DoneEvent(TypedDict):
+    """The terminal "the run finished successfully" event (see `publish_done`)."""
+
+    type: Literal["done"]
+
+
+class ErrorEvent(TypedDict):
+    """The terminal "the run failed" event (see `publish_error`)."""
+
+    type: Literal["error"]
+    message: str
+
+
+ProgressEvent = ProgressStageEvent | DoneEvent | ErrorEvent
+
+_TERMINAL_EVENT_TYPES: frozenset[EventType] = frozenset({"done", "error"})
 
 
 class ProgressBroker:
@@ -131,15 +173,26 @@ def publish_progress(run_id: str, *, stage: str, message: str, **detail: Any) ->
     keyword args (e.g. `document_id=`, `rule_id=`) are carried alongside so a
     client can key off structured fields instead of parsing `message`.
     """
-    event: ProgressEvent = {"type": "progress", "stage": stage, "message": message, **detail}
+    # `cast` rather than a plain annotated dict literal: `**detail` is
+    # `dict[str, Any]`, so pyright can't verify the merged literal only ever
+    # adds `ProgressStageEvent`'s two known-optional keys (`document_id`,
+    # `rule_id`) -- that's a contract every *caller* of `publish_progress`
+    # is responsible for (see the docstring above), not something this
+    # function can check at the type level itself.
+    event = cast(
+        ProgressStageEvent,
+        {"type": "progress", "stage": stage, "message": message, **detail},
+    )
     get_progress_broker().publish(run_id, event)
 
 
 def publish_done(run_id: str) -> None:
     """Publish the terminal "the run finished" event for `run_id`."""
-    get_progress_broker().publish(run_id, {"type": "done"})
+    event: DoneEvent = {"type": "done"}
+    get_progress_broker().publish(run_id, event)
 
 
 def publish_error(run_id: str, message: str) -> None:
     """Publish the terminal "the run failed" event for `run_id`."""
-    get_progress_broker().publish(run_id, {"type": "error", "message": message})
+    event: ErrorEvent = {"type": "error", "message": message}
+    get_progress_broker().publish(run_id, event)
