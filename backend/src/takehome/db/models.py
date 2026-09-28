@@ -3,8 +3,10 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -27,6 +29,25 @@ def _document_type_values(enum_cls: type[DocumentType]) -> list[str]:
     """Store each member's lowercase `.value` (e.g. "title") as the Postgres
     enum's label, rather than SQLAlchemy's default of `.name` (e.g. "TITLE").
     """
+    return [member.value for member in enum_cls]
+
+
+class FactStatus(enum.StrEnum):
+    """Status of one extracted `Fact`, per the requirements doc's Fact
+    wrapper (section 7): `extracted` (found with usable confidence),
+    `needs_checking` (found but confidence below the 0.7 threshold, or a
+    value that failed normalisation), `not_found` (a real, meaningful
+    answer -- many risks come from something being absent), or
+    `edited_by_user` (a solicitor corrected the extracted value).
+    """
+
+    EXTRACTED = "extracted"
+    NEEDS_CHECKING = "needs_checking"
+    NOT_FOUND = "not_found"
+    EDITED_BY_USER = "edited_by_user"
+
+
+def _fact_status_values(enum_cls: type[FactStatus]) -> list[str]:
     return [member.value for member in enum_cls]
 
 
@@ -129,3 +150,49 @@ class Matter(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     conversation: Mapped[Conversation] = relationship(back_populates="matter")
+    facts: Mapped[list[Fact]] = relationship(
+        back_populates="matter", cascade="all, delete-orphan"
+    )
+
+
+class Fact(Base):
+    """One extracted fact belonging to a Matter's risk review.
+
+    Shared, document-type-agnostic scaffolding: every fact-extraction stage
+    (title, lease, environmental -- see the Milestone 2 PRD's section 4 data
+    model) writes rows to this same table, keyed by a dotted `key` (e.g.
+    `lease.breaks`, `lease.security_of_tenure`) rather than one column per
+    field, so adding a new extracted field never requires a schema change.
+
+    Mirrors the requirements doc's Fact wrapper (section 7): `value` is the
+    value as written in the document, `normalised_value` is its
+    machine-comparable form (ISO date, standardised company name, etc. --
+    only populated where normalisation is meaningful for that field's
+    shape), `sources` is a JSON array of SourceSpan-shaped objects (at least
+    one, always), `confidence` is 0-1, and `status` tracks whether the value
+    was actually found.
+    """
+
+    __tablename__ = "facts"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: uuid.uuid4().hex[:16]
+    )
+    matter_id: Mapped[str] = mapped_column(ForeignKey("matters.id", ondelete="CASCADE"))
+    key: Mapped[str] = mapped_column(String)
+    value: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    normalised_value: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String, nullable=True)
+    sources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    confidence: Mapped[float] = mapped_column(Float)
+    status: Mapped[FactStatus] = mapped_column(
+        Enum(
+            FactStatus,
+            name="fact_status",
+            native_enum=True,
+            values_callable=_fact_status_values,
+        )
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    matter: Mapped[Matter] = relationship(back_populates="facts")

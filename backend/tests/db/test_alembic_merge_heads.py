@@ -41,8 +41,15 @@ def test_upgrade_to_head_succeeds_from_a_fresh_database(reset_schema) -> None:
     """`alembic upgrade head` must succeed unambiguously from a schema that
     only has `002_display_name` applied -- the exact ambiguous state that
     previously raised `alembic.util.exc.CommandError: Multiple head
-    revisions are present`."""
+    revisions are present`.
+
+    Asserts against the script directory's actual current head rather than
+    hardcoding `004_merge_heads`, since later migrations (e.g. `005_facts`)
+    legitimately move `head` forward without reopening the ambiguity this
+    test guards against."""
     cfg = reset_schema
+    script = ScriptDirectory.from_config(cfg)
+    expected_head = script.get_heads()[0]
 
     command.upgrade(cfg, "head")
 
@@ -57,13 +64,17 @@ def test_upgrade_to_head_succeeds_from_a_fresh_database(reset_schema) -> None:
             await engine.dispose()
 
     current = asyncio.run(_current_revision())
-    assert current == "004_merge_heads"
+    assert current == expected_head
 
 
 def test_merge_migration_makes_no_schema_changes_of_its_own(reset_schema) -> None:
     """The merge revision must be a pure merge point: it introduces no
     tables/columns of its own, and downgrading past it removes nothing that
-    `003_document_type`/`003_matters` didn't already own."""
+    `003_document_type`/`003_matters` didn't already own.
+
+    Upgrades to `004_merge_heads` specifically, not `head` -- later
+    migrations (e.g. `005_facts`) legitimately add schema after this merge
+    point, which isn't what this test is about."""
     cfg = reset_schema
     command.upgrade(cfg, "003_document_type")
     command.upgrade(cfg, "003_matters")
@@ -84,7 +95,7 @@ def test_merge_migration_makes_no_schema_changes_of_its_own(reset_schema) -> Non
 
     tables_before_merge = asyncio.run(_tables())
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "004_merge_heads")
 
     tables_after_merge = asyncio.run(_tables())
 
