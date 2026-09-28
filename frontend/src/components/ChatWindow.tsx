@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import type { Message } from "../types";
 import { ChatInput } from "./ChatInput";
 import { EmptyState } from "./EmptyState";
+import { ErrorBanner } from "./ErrorBanner";
 import { MessageBubble, StreamingBubble } from "./MessageBubble";
 
 interface ChatWindowProps {
@@ -10,6 +11,8 @@ interface ChatWindowProps {
 	loading: boolean;
 	error: string | null;
 	documentError?: string | null;
+	/** Surfaced when `onRunRiskReview` rejects — mirrors `documentError`'s shape. */
+	riskReviewError?: string | null;
 	streaming: boolean;
 	streamingContent: string;
 	/** Number of documents currently attached to this conversation. */
@@ -25,6 +28,10 @@ interface ChatWindowProps {
 	 * entire drag/drop batch, never once per file within a batch.
 	 */
 	onUploadSettled?: () => void;
+	/** Triggers a risk-review run — see `ChatInput`'s own prop for details. */
+	onRunRiskReview: () => void | Promise<void>;
+	/** True while a risk-review run is in flight — see `ChatInput`'s own prop. */
+	riskReviewRunning: boolean;
 }
 
 export function ChatWindow({
@@ -32,6 +39,7 @@ export function ChatWindow({
 	loading,
 	error,
 	documentError,
+	riskReviewError,
 	streaming,
 	streamingContent,
 	documentCount,
@@ -40,6 +48,8 @@ export function ChatWindow({
 	onSend,
 	onUpload,
 	onUploadSettled,
+	onRunRiskReview,
+	riskReviewRunning,
 }: ChatWindowProps) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const hasDocument = documentCount > 0;
@@ -79,11 +89,8 @@ export function ChatWindow({
 	if (messages.length === 0 && !streaming) {
 		return (
 			<div className="flex flex-1 flex-col bg-white">
-				{documentError && (
-					<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
-						{documentError}
-					</div>
-				)}
+				{documentError && <ErrorBanner message={documentError} />}
+				{riskReviewError && <ErrorBanner message={riskReviewError} />}
 				<div className="flex flex-1 items-center justify-center">
 					{hasDocument ? (
 						<div className="text-center">
@@ -102,6 +109,8 @@ export function ChatWindow({
 					onSend={onSend}
 					onUpload={onUpload}
 					onUploadSettled={onUploadSettled}
+					onRunRiskReview={onRunRiskReview}
+					riskReviewRunning={riskReviewRunning}
 					disabled={streaming}
 					documentCount={documentCount}
 					maxDocuments={maxDocuments}
@@ -112,16 +121,9 @@ export function ChatWindow({
 
 	return (
 		<div className="flex flex-1 flex-col bg-white">
-			{error && (
-				<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
-					{error}
-				</div>
-			)}
-			{documentError && (
-				<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
-					{documentError}
-				</div>
-			)}
+			{error && <ErrorBanner message={error} />}
+			{documentError && <ErrorBanner message={documentError} />}
+			{riskReviewError && <ErrorBanner message={riskReviewError} />}
 
 			<div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
 				<div className="mx-auto max-w-2xl space-y-1">
@@ -136,6 +138,8 @@ export function ChatWindow({
 				onSend={onSend}
 				onUpload={onUpload}
 				onUploadSettled={onUploadSettled}
+				onRunRiskReview={onRunRiskReview}
+				riskReviewRunning={riskReviewRunning}
 				disabled={streaming}
 				documentCount={documentCount}
 				maxDocuments={maxDocuments}
