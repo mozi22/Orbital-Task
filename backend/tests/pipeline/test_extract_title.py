@@ -32,6 +32,8 @@ from takehome.pipeline.extract_title import (
     ExtractedScalar,
     ExtractedSource,
     TitleReportExtraction,
+    _locate_quote,
+    _split_pages,
     extract_title_report_facts,
     extraction_to_facts,
     title_extraction_agent,
@@ -125,6 +127,63 @@ def _minimal_extraction(**overrides: Any) -> TitleReportExtraction:
     }
     base.update(overrides)
     return TitleReportExtraction(**base)
+
+
+# =============================================================================
+# _split_pages / _locate_quote -- pure unit tests
+# =============================================================================
+
+
+def test_split_pages_splits_on_page_markers() -> None:
+    document_text = (
+        "--- Page 1 ---\nFirst page text.\n\n--- Page 2 ---\nSecond page text.\n"
+    )
+    pages = _split_pages(document_text)
+
+    assert pages == {1: "First page text.\n\n", 2: "Second page text.\n"}
+
+
+def test_split_pages_captures_the_final_pages_text_to_the_end_of_the_document() -> None:
+    """The last page has no following marker to bound it -- its text must
+    run all the way to the end of `document_text`, not be truncated."""
+    document_text = "--- Page 1 ---\nFirst.\n\n--- Page 2 ---\nLast page, no trailing marker."
+    pages = _split_pages(document_text)
+
+    assert pages[2] == "Last page, no trailing marker."
+
+
+def test_split_pages_with_no_markers_returns_no_pages() -> None:
+    """A document with no `--- Page N ---` markers (e.g. hand-written test
+    text, or extraction that produced a single unmarked blob) has nothing
+    for this to key by page number -- the sane fallback is an empty
+    mapping, so callers (`_sources_to_dicts`) fall through to leaving
+    `char_start`/`char_end` unset rather than mis-attributing text."""
+    document_text = "Some text with no page markers at all."
+    pages = _split_pages(document_text)
+
+    assert pages == {}
+
+
+def test_locate_quote_finds_a_verbatim_match() -> None:
+    page_text = "The property is Freehold. Title Number: LN782451."
+    located = _locate_quote(page_text, "LN782451")
+
+    assert located is not None
+    assert located == (40, 48)
+    assert page_text[located[0] : located[1]] == "LN782451"
+
+
+def test_locate_quote_returns_none_when_quote_is_not_present() -> None:
+    page_text = "The property is Freehold. Title Number: LN782451."
+    assert _locate_quote(page_text, "Leasehold") is None
+
+
+def test_locate_quote_returns_none_on_whitespace_mismatch() -> None:
+    """The LLM's copy of a quote commonly collapses whitespace differently
+    from the extracted PDF text (e.g. a line break where the source has a
+    single space) -- this must not fuzzy-match, only return `None`."""
+    page_text = "Title Number:\nLN782451"
+    assert _locate_quote(page_text, "Title Number: LN782451") is None
 
 
 # =============================================================================
@@ -510,7 +569,25 @@ async def test_extract_title_report_facts_persists_expected_facts_for_lot_7_fixt
         by_key.setdefault(f.key, []).append(f)
 
     # EX-T01: title number
-    assert by_key[f"{KEY_PREFIX}.title_number"][0].normalised_value == "LN782451"
+    title_number_fact = by_key[f"{KEY_PREFIX}.title_number"][0]
+    assert title_number_fact.normalised_value == "LN782451"
+    # `document_text` is threaded through in production (see
+    # `extract_title_report_facts`), so the source's char offsets must be
+    # located against the *real* fixture PDF text, not left `None` -- this
+    # is the actual end-to-end wiring the unit tests for `_split_pages` and
+    # `_locate_quote` can't prove on their own.
+    title_number_source = title_number_fact.sources[0]
+    assert title_number_source["pdf_page_index"] == 1
+    assert document.extracted_text is not None
+    page_1_text = _split_pages(document.extracted_text)[1]
+    expected_start = page_1_text.find("LN782451")
+    assert expected_start != -1
+    assert title_number_source["char_start"] == expected_start
+    assert title_number_source["char_end"] == expected_start + len("LN782451")
+    assert (
+        page_1_text[title_number_source["char_start"] : title_number_source["char_end"]]
+        == "LN782451"
+    )
     # EX-T02: edition date, normalised to ISO 8601
     assert by_key[f"{KEY_PREFIX}.edition_date"][0].normalised_value == "2023-11-22"
     # EX-T03: tenure and class
