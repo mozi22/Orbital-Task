@@ -28,6 +28,9 @@ citation. Each list-shaped fact (`historical_uses`, `pollution_incidents`,
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Protocol
+
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
@@ -303,6 +306,42 @@ def _fact(
     )
 
 
+class _SourcedListItem(Protocol):
+    """Structural shape shared by every list-item extraction model
+    (`HistoricalUse`, `PollutionIncident`, `StorageTank`) that `_list_fact`
+    needs to build one shared-per-item confidence/source `NewFact` row --
+    see `_list_fact`."""
+
+    confidence: float
+    source: SourceSpan
+
+
+def _list_fact[T: _SourcedListItem](
+    document_id: str,
+    key: str,
+    items: list[T],
+    value_of: Callable[[T], dict[str, object]],
+) -> NewFact:
+    """Build the one `NewFact` row for a list-shaped fact
+    (`historical_uses`, `pollution_incidents`, `storage_tanks`): each list
+    item cites its own source (per this module's docstring), so the fact's
+    overall confidence is the minimum across items and its sources are the
+    concatenation of every item's source. `value_of` maps one extraction
+    item to its plain-dict `Fact.value` shape -- the only thing that
+    actually differs between these three facts.
+
+    Returns a confidence-1.0, empty-sources, empty-list fact when the
+    report genuinely has no items of this kind ("not_found" is a real
+    answer, not an error -- see this module's docstring).
+    """
+    if not items:
+        return _fact(key, [], 1.0, [])
+    confidence = min(item.confidence for item in items)
+    sources = [s for item in items for s in _source(document_id, item.source)]
+    value = [value_of(item) for item in items]
+    return _fact(key, value, confidence, sources)
+
+
 def flatten_environmental_facts(
     extraction: EnvironmentalReportExtraction, *, document_id: str
 ) -> list[NewFact]:
@@ -413,21 +452,19 @@ def flatten_environmental_facts(
     )
 
     # --- historical_uses[] ---------------------------------------------------
-    if extraction.historical_uses:
-        confidence = min(u.confidence for u in extraction.historical_uses)
-        sources = [s for u in extraction.historical_uses for s in _source(document_id, u.source)]
-        value = [
-            {
+    facts.append(
+        _list_fact(
+            document_id,
+            "historical_uses",
+            extraction.historical_uses,
+            lambda u: {
                 "from_year": u.from_year,
                 "to_year": u.to_year,
                 "use": u.use,
                 "potentially_contaminative": u.potentially_contaminative,
-            }
-            for u in extraction.historical_uses
-        ]
-        facts.append(_fact("historical_uses", value, confidence, sources))
-    else:
-        facts.append(_fact("historical_uses", [], 1.0, []))
+            },
+        )
+    )
 
     # --- geology_water --------------------------------------------------------
     gw = extraction.geology_water
@@ -470,40 +507,34 @@ def flatten_environmental_facts(
     )
 
     # --- pollution_incidents[] --------------------------------------------------
-    if extraction.pollution_incidents:
-        confidence = min(p.confidence for p in extraction.pollution_incidents)
-        sources = [
-            s for p in extraction.pollution_incidents for s in _source(document_id, p.source)
-        ]
-        value = [
-            {
+    facts.append(
+        _list_fact(
+            document_id,
+            "pollution_incidents",
+            extraction.pollution_incidents,
+            lambda p: {
                 "year": p.year,
                 "type": p.type,
                 "distance_m": p.distance_m,
                 "status": p.status,
-            }
-            for p in extraction.pollution_incidents
-        ]
-        facts.append(_fact("pollution_incidents", value, confidence, sources))
-    else:
-        facts.append(_fact("pollution_incidents", [], 1.0, []))
+            },
+        )
+    )
 
     # --- storage_tanks[] ---------------------------------------------------------
-    if extraction.storage_tanks:
-        confidence = min(t.confidence for t in extraction.storage_tanks)
-        sources = [s for t in extraction.storage_tanks for s in _source(document_id, t.source)]
-        value = [
-            {
+    facts.append(
+        _list_fact(
+            document_id,
+            "storage_tanks",
+            extraction.storage_tanks,
+            lambda t: {
                 "location": t.location,
                 "contents": t.contents,
                 "capacity_litres": t.capacity_litres,
                 "status": t.status,
-            }
-            for t in extraction.storage_tanks
-        ]
-        facts.append(_fact("storage_tanks", value, confidence, sources))
-    else:
-        facts.append(_fact("storage_tanks", [], 1.0, []))
+            },
+        )
+    )
 
     # --- overall_risk -------------------------------------------------------------
     overall = extraction.overall_risk
