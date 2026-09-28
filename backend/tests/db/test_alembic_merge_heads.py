@@ -41,10 +41,16 @@ def test_upgrade_to_head_succeeds_from_a_fresh_database(reset_schema) -> None:
     """`alembic upgrade head` must succeed unambiguously from a schema that
     only has `002_display_name` applied -- the exact ambiguous state that
     previously raised `alembic.util.exc.CommandError: Multiple head
-    revisions are present`."""
+    revisions are present`.
+
+    Upgrades only as far as `004_merge_heads` itself (not all the way to
+    the real `head`, which has since grown past it, e.g. `005_facts`) --
+    this test is specifically about the merge revision's own effect, not
+    about whatever schema state later migrations add on top of it.
+    """
     cfg = reset_schema
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "004_merge_heads")
 
     async def _current_revision() -> str | None:
         engine = create_async_engine(settings.database_url)
@@ -84,7 +90,10 @@ def test_merge_migration_makes_no_schema_changes_of_its_own(reset_schema) -> Non
 
     tables_before_merge = asyncio.run(_tables())
 
-    command.upgrade(cfg, "head")
+    # Only as far as the merge revision itself -- not the real `head`, which
+    # has since grown past it (e.g. `005_facts`), and this test is only
+    # about `004_merge_heads`'s own effect on the schema.
+    command.upgrade(cfg, "004_merge_heads")
 
     tables_after_merge = asyncio.run(_tables())
 
