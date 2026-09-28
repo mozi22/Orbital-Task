@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
+from typing import Any, cast
 
 import fitz
 import pytest
@@ -46,9 +47,9 @@ def _extract_pdf_text(path: str) -> str:
     the real upload path would hand to the extraction agent."""
     doc = fitz.open(path)
     try:
-        pages = []
+        pages: list[str] = []
         for page_num in range(len(doc)):
-            text = doc[page_num].get_text()
+            text = doc[page_num].get_text()  # type: ignore[union-attr]
             if text.strip():
                 pages.append(f"--- Page {page_num + 1} ---\n{text}")
         return "\n\n".join(pages)
@@ -65,6 +66,15 @@ def _scalar(value: str, *, confidence: float = 0.95, page: int = 1) -> Extracted
     )
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Narrow a `Fact.value`/`normalised_value` (typed `Any | None` on the
+    JSON-backed column) to a plain dict for subscripting in assertions,
+    failing loudly if a test's fixture data is somehow shaped wrong rather
+    than silently mis-subscripting it."""
+    assert isinstance(value, dict)
+    return cast(dict[str, Any], value)
+
+
 def _not_found(*, confidence: float = 0.95) -> ExtractedScalar:
     return ExtractedScalar(found=False, value=None, confidence=confidence, sources=[])
 
@@ -79,11 +89,11 @@ def _item(
     )
 
 
-def _minimal_extraction(**overrides: object) -> TitleReportExtraction:
+def _minimal_extraction(**overrides: Any) -> TitleReportExtraction:
     """Build a `TitleReportExtraction` with every scalar field defaulted to
     a simple found value, so individual tests only need to override the
     one or two fields they care about."""
-    base: dict[str, object] = {
+    base: dict[str, Any] = {
         "title_number": _scalar("LN782451"),
         "edition_date": _scalar("22 November 2023"),
         "as_at_datetime": _scalar("12:00 on 22 November 2023"),
@@ -280,8 +290,8 @@ def test_list_field_produces_one_fact_per_item() -> None:
 
     covenant_facts = [f for f in facts if f.key == f"{KEY_PREFIX}.restrictive_covenants"]
     assert len(covenant_facts) == 2
-    assert covenant_facts[0].value["category"] == "use"
-    assert covenant_facts[1].value["category"] == "height"
+    assert _as_dict(covenant_facts[0].value)["category"] == "use"
+    assert _as_dict(covenant_facts[1].value)["category"] == "height"
 
 
 def test_list_item_date_subfield_is_normalised() -> None:
@@ -301,10 +311,11 @@ def test_list_item_date_subfield_is_normalised() -> None:
     facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
 
     charge_fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.charges")
-    assert charge_fact.normalised_value["date"] == "2019-03-15"
-    assert charge_fact.normalised_value["lender_name"] == "Barclays Bank Limited"
-    assert charge_fact.normalised_value["lender_company_number"] == "01026167"
-    assert charge_fact.normalised_value["secures_further_advances"] is True
+    normalised = _as_dict(charge_fact.normalised_value)
+    assert normalised["date"] == "2019-03-15"
+    assert normalised["lender_name"] == "Barclays Bank Limited"
+    assert normalised["lender_company_number"] == "01026167"
+    assert normalised["secures_further_advances"] is True
 
 
 def test_list_item_status_reflects_its_own_confidence() -> None:
@@ -494,7 +505,7 @@ async def test_extract_title_report_facts_persists_expected_facts_for_lot_7_fixt
     facts = await extract_title_report_facts(session, matter_id=matter_id, document=document)
 
     assert len(facts) > 0
-    by_key = {}
+    by_key: dict[str, list[Fact]] = {}
     for f in facts:
         by_key.setdefault(f.key, []).append(f)
 
@@ -506,7 +517,9 @@ async def test_extract_title_report_facts_persists_expected_facts_for_lot_7_fixt
     assert by_key[f"{KEY_PREFIX}.tenure"][0].value == "Freehold"
     assert by_key[f"{KEY_PREFIX}.title_class"][0].value == "Absolute"
     # EX-T04: address
-    assert "Victoria Park Road" in by_key[f"{KEY_PREFIX}.property_address"][0].value
+    address_value = by_key[f"{KEY_PREFIX}.property_address"][0].value
+    assert address_value is not None
+    assert "Victoria Park Road" in address_value
     # EX-T05: site area, normalised to m2 (0.34 ha = 3400 m2)
     site_area_fact = by_key[f"{KEY_PREFIX}.property_site_area"][0]
     assert site_area_fact.normalised_value == pytest.approx(3400.0)
@@ -524,8 +537,9 @@ async def test_extract_title_report_facts_persists_expected_facts_for_lot_7_fixt
     assert price_fact.unit == "GBP"
     # EX-T11: charge, one item, lender name normalised
     charge_fact = by_key[f"{KEY_PREFIX}.charges"][0]
-    assert charge_fact.normalised_value["lender_name"] == "Barclays Bank PLC"
-    assert charge_fact.normalised_value["date"] == "2019-03-15"
+    charge_normalised = _as_dict(charge_fact.normalised_value)
+    assert charge_normalised["lender_name"] == "Barclays Bank PLC"
+    assert charge_normalised["date"] == "2019-03-15"
     # EX-T12-15: three restrictive covenants
     assert len(by_key[f"{KEY_PREFIX}.restrictive_covenants"]) == 3
     # EX-T16-17: two easements

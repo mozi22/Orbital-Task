@@ -68,7 +68,13 @@ class ExtractedSource(BaseModel):
     filled in by this module, not the LLM: `document_id` is already known
     from the document being processed, and reliable character offsets
     aren't something a language model can be trusted to report -- code
-    locates the quote in the page text afterward, see `_locate_quote`."""
+    locates the quote in the page text afterward, see `_locate_quote` and
+    `_sources_to_dicts`. Locating the quote can fail (the LLM's copy of it
+    may not match the extracted PDF text byte-for-byte, e.g. different
+    whitespace collapsing) -- when it does, `char_start`/`char_end` are left
+    `None` in the persisted source rather than guessing a position; the
+    `quote`, page and clause reference are still always present for a human
+    to find the passage."""
 
     pdf_page_index: int = Field(ge=1, description="1-based page number in the PDF")
     printed_page_label: str | None = Field(
@@ -362,23 +368,82 @@ def _status_for(confidence: float) -> FactStatus:
     return FactStatus.EXTRACTED
 
 
-def _sources_to_dicts(sources: list[ExtractedSource], document_id: str) -> list[dict[str, Any]]:
+# Matches the page markers `services/document.py`'s PyMuPDF extraction
+# inserts into `Document.extracted_text` (e.g. "--- Page 3 ---\n...").
+_PAGE_MARKER_RE = re.compile(r"--- Page (\d+) ---\n")
+
+
+def _split_pages(document_text: str) -> dict[int, str]:
+    """Split a document's full extracted text (as produced by
+    `services/document.py`) back into its per-page text, keyed by the same
+    1-based `pdf_page_index` the extraction agent reports sources against."""
+    markers = list(_PAGE_MARKER_RE.finditer(document_text))
+    pages: dict[int, str] = {}
+    for i, marker in enumerate(markers):
+        page_num = int(marker.group(1))
+        start = marker.end()
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(document_text)
+        pages[page_num] = document_text[start:end]
+    return pages
+
+
+def _locate_quote(page_text: str, quote: str) -> tuple[int, int] | None:
+    """Find `quote`'s character offsets within `page_text`, for the
+    requirements doc's `SourceSpan.char_start`/`char_end` ("position in the
+    page text, for highlighting"). Returns `None` if the quote can't be
+    found verbatim on that page -- e.g. the LLM's copy doesn't match the
+    extracted PDF text exactly (whitespace collapsing is the common case) --
+    rather than guessing a position from a fuzzy match."""
+    index = page_text.find(quote)
+    if index == -1:
+        return None
+    return index, index + len(quote)
+
+
+def _sources_to_dicts(
+    sources: list[ExtractedSource],
+    document_id: str,
+    *,
+    pages: dict[int, str] | None = None,
+) -> list[dict[str, Any]]:
     """Attach `document_id` (known from the document being processed, not
-    something the LLM reports) to each of the LLM's reported sources."""
-    return [
-        {
-            "document_id": document_id,
-            "pdf_page_index": source.pdf_page_index,
-            "printed_page_label": source.printed_page_label,
-            "clause_ref": source.clause_ref,
-            "quote": source.quote,
-        }
-        for source in sources
-    ]
+    something the LLM reports) to each of the LLM's reported sources, and
+    locate each quote's character offsets within its page's text via
+    `_locate_quote`. `pages` is the document's text already split by
+    `_split_pages`; when it's not supplied (e.g. a caller with no document
+    text on hand) or the quote can't be located, `char_start`/`char_end`
+    are left `None` rather than fabricated."""
+    dicts: list[dict[str, Any]] = []
+    for source in sources:
+        char_start: int | None = None
+        char_end: int | None = None
+        if pages is not None:
+            page_text = pages.get(source.pdf_page_index)
+            if page_text is not None:
+                located = _locate_quote(page_text, source.quote)
+                if located is not None:
+                    char_start, char_end = located
+        dicts.append(
+            {
+                "document_id": document_id,
+                "pdf_page_index": source.pdf_page_index,
+                "printed_page_label": source.printed_page_label,
+                "clause_ref": source.clause_ref,
+                "quote": source.quote,
+                "char_start": char_start,
+                "char_end": char_end,
+            }
+        )
+    return dicts
 
 
 def _build_scalar_fact(
-    *, matter_id: str, document_id: str, field_name: str, scalar: ExtractedScalar
+    *,
+    matter_id: str,
+    document_id: str,
+    field_name: str,
+    scalar: ExtractedScalar,
+    pages: dict[int, str] | None,
 ) -> Fact:
     key = f"{KEY_PREFIX}.{field_name}"
     if not scalar.found:
@@ -402,14 +467,19 @@ def _build_scalar_fact(
         value=scalar.value,
         normalised_value=normalised_value,
         unit=unit,
-        sources=_sources_to_dicts(scalar.sources, document_id),
+        sources=_sources_to_dicts(scalar.sources, document_id, pages=pages),
         confidence=scalar.confidence,
         status=_status_for(scalar.confidence),
     )
 
 
 def _build_list_item_facts(
-    *, matter_id: str, document_id: str, field_name: str, items: list[ExtractedListItem]
+    *,
+    matter_id: str,
+    document_id: str,
+    field_name: str,
+    items: list[ExtractedListItem],
+    pages: dict[int, str] | None,
 ) -> list[Fact]:
     key = f"{KEY_PREFIX}.{field_name}"
     facts: list[Fact] = []
@@ -422,7 +492,7 @@ def _build_list_item_facts(
                 value=item.value,
                 normalised_value=_normalise_list_item(item.value),
                 unit=None,
-                sources=_sources_to_dicts(item.sources, document_id),
+                sources=_sources_to_dicts(item.sources, document_id, pages=pages),
                 confidence=item.confidence,
                 status=_status_for(item.confidence),
             )
@@ -430,65 +500,63 @@ def _build_list_item_facts(
     return facts
 
 
-# Every scalar field on `TitleReportExtraction`, in declaration order -- used
-# by `_extraction_to_facts` so adding a field there is the only change
-# needed to also persist it (no separate list to keep in sync).
+# Every scalar (`ExtractedScalar`) and repeating (`list[ExtractedListItem]`)
+# field on `TitleReportExtraction`, in declaration order -- derived from the
+# model itself (rather than hand-copied) so adding a field there is the only
+# change needed for `extraction_to_facts` to also persist it: nothing here
+# can silently drift out of sync with the model and drop a field.
 _SCALAR_FIELD_NAMES = [
-    "title_number",
-    "edition_date",
-    "as_at_datetime",
-    "is_summary",
-    "tenure",
-    "title_class",
-    "property_address",
-    "property_postcode",
-    "property_description",
-    "property_site_area",
-    "property_boundary_north",
-    "property_boundary_east",
-    "property_boundary_south",
-    "property_boundary_west",
-    "property_building_storeys",
-    "property_building_gross_internal_area",
-    "property_building_use",
-    "registered_owner_name",
-    "registered_owner_company_number",
-    "registered_owner_registered_office",
-    "registered_owner_registered_since",
-    "price_paid_amount",
-    "price_paid_date",
+    name
+    for name, field in TitleReportExtraction.model_fields.items()
+    if field.annotation is ExtractedScalar
 ]
-
-# The five repeating fields, same "list once, reuse everywhere" rationale.
 _LIST_FIELD_NAMES = [
-    "charges",
-    "restrictive_covenants",
-    "easements",
-    "noted_entries",
-    "cautions_and_restrictions",
+    name
+    for name, field in TitleReportExtraction.model_fields.items()
+    if field.annotation == list[ExtractedListItem]
 ]
 
 
 def extraction_to_facts(
-    extraction: TitleReportExtraction, *, matter_id: str, document_id: str
+    extraction: TitleReportExtraction,
+    *,
+    matter_id: str,
+    document_id: str,
+    document_text: str | None = None,
 ) -> list[Fact]:
     """Turn one LLM extraction result into the `Fact` rows it represents,
     with normalisation already applied -- pure, no I/O, so it's testable
     without a database or a real LLM call (see `extract_title_report_facts`
-    for the function that actually calls the LLM and persists these)."""
+    for the function that actually calls the LLM and persists these).
+
+    `document_text` is the document's full extracted text (the same
+    "--- Page N ---"-marked text the extraction agent was given), used to
+    locate each source quote's character offsets via `_locate_quote`. It's
+    optional -- callers that don't have it on hand (or tests that only care
+    about the value/normalisation wiring) simply get sources with
+    `char_start`/`char_end` left `None`."""
+    pages = _split_pages(document_text) if document_text else None
     facts: list[Fact] = []
     for field_name in _SCALAR_FIELD_NAMES:
         scalar = getattr(extraction, field_name)
         facts.append(
             _build_scalar_fact(
-                matter_id=matter_id, document_id=document_id, field_name=field_name, scalar=scalar
+                matter_id=matter_id,
+                document_id=document_id,
+                field_name=field_name,
+                scalar=scalar,
+                pages=pages,
             )
         )
     for field_name in _LIST_FIELD_NAMES:
         items = getattr(extraction, field_name)
         facts.extend(
             _build_list_item_facts(
-                matter_id=matter_id, document_id=document_id, field_name=field_name, items=items
+                matter_id=matter_id,
+                document_id=document_id,
+                field_name=field_name,
+                items=items,
+                pages=pages,
             )
         )
     return facts
@@ -521,7 +589,9 @@ async def extract_title_report_facts(
         f"Extract title-report facts from the following document:\n\n{truncated}"
     )
 
-    facts = extraction_to_facts(result.output, matter_id=matter_id, document_id=document.id)
+    facts = extraction_to_facts(
+        result.output, matter_id=matter_id, document_id=document.id, document_text=text
+    )
     session.add_all(facts)
     await session.commit()
     for fact in facts:
