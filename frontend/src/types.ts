@@ -36,3 +36,15 @@ export interface Document {
 export interface ConversationDetail extends Conversation {
 	documents: Document[];
 }
+
+/**
+ * Mirrors the backend's `RiskReviewTriggerResponse`
+ * (backend/src/takehome/web/routers/risk_review.py). `run_id` is currently
+ * backed 1:1 by the conversation's `Matter` id, but kept as its own field
+ * name so the client-facing contract doesn't have to change if a future
+ * ticket adds a distinct per-run record.
+ */
+export interface RiskReviewTrigger {
+	run_id: string;
+	status: "running";
+}

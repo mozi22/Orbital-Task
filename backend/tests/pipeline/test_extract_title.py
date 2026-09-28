@@ -2,7 +2,7 @@
 
 Two layers, per the ticket's own acceptance criteria:
   - Pure unit tests of `extraction_to_facts` (the extraction-schema ->
-    normalised-`Fact` wiring), with no LLM or database involved.
+    normalised-`NewFact` wiring), with no LLM or database involved.
   - A functional check that runs `extract_title_report_facts` end to end
     (real Postgres, a stubbed LLM whose output mirrors the sample
     `title-report-lot-7.pdf` fixture's real content) and asserts the
@@ -22,22 +22,21 @@ import fitz
 import pytest
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from takehome.db.models import Conversation, Document, Fact, FactStatus, Matter
+from takehome.db.models import Conversation, Document, Fact, Matter
 from takehome.pipeline.extract_title import (
     KEY_PREFIX,
-    NEEDS_CHECKING_THRESHOLD,
     ExtractedListItem,
     ExtractedScalar,
     ExtractedSource,
     TitleReportExtraction,
-    _locate_quote,
-    _split_pages,
     extract_title_report_facts,
     extraction_to_facts,
     title_extraction_agent,
 )
+from takehome.services.fact import NEEDS_CHECKING_CONFIDENCE_THRESHOLD, decode_sources, decode_value
 
 SAMPLE_DOCS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "sample-docs")
 SAMPLE_TITLE_PDF_PATH = os.path.join(SAMPLE_DOCS_DIR, "title-report-lot-7.pdf")
@@ -69,10 +68,10 @@ def _scalar(value: str, *, confidence: float = 0.95, page: int = 1) -> Extracted
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    """Narrow a `Fact.value`/`normalised_value` (typed `Any | None` on the
-    JSON-backed column) to a plain dict for subscripting in assertions,
-    failing loudly if a test's fixture data is somehow shaped wrong rather
-    than silently mis-subscripting it."""
+    """Narrow a `NewFact.value`/`normalised_value` (typed `Any | None`) to a
+    plain dict for subscripting in assertions, failing loudly if a test's
+    fixture data is somehow shaped wrong rather than silently
+    mis-subscripting it."""
     assert isinstance(value, dict)
     return cast(dict[str, Any], value)
 
@@ -130,70 +129,13 @@ def _minimal_extraction(**overrides: Any) -> TitleReportExtraction:
 
 
 # =============================================================================
-# _split_pages / _locate_quote -- pure unit tests
-# =============================================================================
-
-
-def test_split_pages_splits_on_page_markers() -> None:
-    document_text = (
-        "--- Page 1 ---\nFirst page text.\n\n--- Page 2 ---\nSecond page text.\n"
-    )
-    pages = _split_pages(document_text)
-
-    assert pages == {1: "First page text.\n\n", 2: "Second page text.\n"}
-
-
-def test_split_pages_captures_the_final_pages_text_to_the_end_of_the_document() -> None:
-    """The last page has no following marker to bound it -- its text must
-    run all the way to the end of `document_text`, not be truncated."""
-    document_text = "--- Page 1 ---\nFirst.\n\n--- Page 2 ---\nLast page, no trailing marker."
-    pages = _split_pages(document_text)
-
-    assert pages[2] == "Last page, no trailing marker."
-
-
-def test_split_pages_with_no_markers_returns_no_pages() -> None:
-    """A document with no `--- Page N ---` markers (e.g. hand-written test
-    text, or extraction that produced a single unmarked blob) has nothing
-    for this to key by page number -- the sane fallback is an empty
-    mapping, so callers (`_sources_to_dicts`) fall through to leaving
-    `char_start`/`char_end` unset rather than mis-attributing text."""
-    document_text = "Some text with no page markers at all."
-    pages = _split_pages(document_text)
-
-    assert pages == {}
-
-
-def test_locate_quote_finds_a_verbatim_match() -> None:
-    page_text = "The property is Freehold. Title Number: LN782451."
-    located = _locate_quote(page_text, "LN782451")
-
-    assert located is not None
-    assert located == (40, 48)
-    assert page_text[located[0] : located[1]] == "LN782451"
-
-
-def test_locate_quote_returns_none_when_quote_is_not_present() -> None:
-    page_text = "The property is Freehold. Title Number: LN782451."
-    assert _locate_quote(page_text, "Leasehold") is None
-
-
-def test_locate_quote_returns_none_on_whitespace_mismatch() -> None:
-    """The LLM's copy of a quote commonly collapses whitespace differently
-    from the extracted PDF text (e.g. a line break where the source has a
-    single space) -- this must not fuzzy-match, only return `None`."""
-    page_text = "Title Number:\nLN782451"
-    assert _locate_quote(page_text, "Title Number: LN782451") is None
-
-
-# =============================================================================
 # extraction_to_facts -- pure unit tests
 # =============================================================================
 
 
 def test_every_scalar_field_becomes_a_key_prefixed_fact() -> None:
     extraction = _minimal_extraction()
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     keys = {f.key for f in facts}
     assert f"{KEY_PREFIX}.title_number" in keys
@@ -203,7 +145,7 @@ def test_every_scalar_field_becomes_a_key_prefixed_fact() -> None:
 
 def test_date_fields_are_normalised_to_iso() -> None:
     extraction = _minimal_extraction(edition_date=_scalar("22 November 2023"))
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.edition_date")
     assert fact.normalised_value == "2023-11-22"
@@ -212,7 +154,7 @@ def test_date_fields_are_normalised_to_iso() -> None:
 
 def test_money_field_is_normalised_to_pence_gbp() -> None:
     extraction = _minimal_extraction(price_paid_amount=_scalar("£4,250,000"))
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.price_paid_amount")
     assert fact.normalised_value == 425_000_000
@@ -221,7 +163,7 @@ def test_money_field_is_normalised_to_pence_gbp() -> None:
 
 def test_company_name_field_is_normalised() -> None:
     extraction = _minimal_extraction(registered_owner_name=_scalar("Victoria Park Ltd"))
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.registered_owner_name")
     assert fact.normalised_value == "Victoria Park Limited"
@@ -229,7 +171,7 @@ def test_company_name_field_is_normalised() -> None:
 
 def test_area_field_is_normalised_to_m2_with_unit() -> None:
     extraction = _minimal_extraction(property_site_area=_scalar("0.34 hectares"))
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.property_site_area")
     assert fact.normalised_value == pytest.approx(3400.0)
@@ -241,7 +183,7 @@ def test_area_field_strips_trailing_alternate_unit_parenthetical() -> None:
     alternate-unit parenthetical, e.g. "0.34 hectares (0.84 acres)" -- this
     must still normalise, not silently fail."""
     extraction = _minimal_extraction(property_site_area=_scalar("0.34 hectares (0.84 acres)"))
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.property_site_area")
     assert fact.normalised_value == pytest.approx(3400.0)
@@ -250,7 +192,7 @@ def test_area_field_strips_trailing_alternate_unit_parenthetical() -> None:
 
 def test_bool_field_is_normalised_from_text() -> None:
     extraction = _minimal_extraction(is_summary=_scalar("true"))
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.is_summary")
     assert fact.normalised_value is True
@@ -264,7 +206,7 @@ def test_field_with_no_normaliser_is_copied_through_unchanged() -> None:
         registered_owner_company_number=_scalar("08234571"),
         property_postcode=_scalar("E9 7HD"),
     )
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     company_number_fact = next(
         f for f in facts if f.key == f"{KEY_PREFIX}.registered_owner_company_number"
@@ -276,10 +218,10 @@ def test_field_with_no_normaliser_is_copied_through_unchanged() -> None:
 
 def test_not_found_field_gets_not_found_status_and_no_value() -> None:
     extraction = _minimal_extraction(title_class=_not_found())
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.title_class")
-    assert fact.status == FactStatus.NOT_FOUND
+    assert fact.status == "not_found"
     assert fact.value is None
     assert fact.normalised_value is None
     assert fact.sources == []
@@ -287,52 +229,44 @@ def test_not_found_field_gets_not_found_status_and_no_value() -> None:
 
 def test_low_confidence_field_is_marked_needs_checking() -> None:
     extraction = _minimal_extraction(
-        title_number=_scalar("LN782451", confidence=NEEDS_CHECKING_THRESHOLD - 0.01)
+        title_number=_scalar("LN782451", confidence=NEEDS_CHECKING_CONFIDENCE_THRESHOLD - 0.01)
     )
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.title_number")
-    assert fact.status == FactStatus.NEEDS_CHECKING
+    assert fact.status == "needs_checking"
 
 
-def test_confidence_at_threshold_is_extracted_not_needs_checking() -> None:
+def test_confidence_at_threshold_is_found_not_needs_checking() -> None:
     extraction = _minimal_extraction(
-        title_number=_scalar("LN782451", confidence=NEEDS_CHECKING_THRESHOLD)
+        title_number=_scalar("LN782451", confidence=NEEDS_CHECKING_CONFIDENCE_THRESHOLD)
     )
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.title_number")
-    assert fact.status == FactStatus.EXTRACTED
+    assert fact.status == "found"
 
 
-def test_high_confidence_field_is_marked_extracted() -> None:
+def test_high_confidence_field_is_marked_found() -> None:
     extraction = _minimal_extraction(title_number=_scalar("LN782451", confidence=0.95))
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.title_number")
-    assert fact.status == FactStatus.EXTRACTED
-
-
-def test_scalar_fact_keeps_matter_and_document_ids() -> None:
-    extraction = _minimal_extraction()
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
-
-    assert all(f.matter_id == "m1" for f in facts)
-    assert all(f.document_id == "d1" for f in facts)
+    assert fact.status == "found"
 
 
 def test_scalar_fact_sources_carry_the_document_id() -> None:
     extraction = _minimal_extraction(title_number=_scalar("LN782451"))
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.title_number")
-    assert fact.sources[0]["document_id"] == "d1"
-    assert fact.sources[0]["pdf_page_index"] == 1
+    assert fact.sources[0].document_id == "d1"
+    assert fact.sources[0].pdf_page_index == 1
 
 
 def test_empty_list_field_produces_no_facts_but_is_not_an_error() -> None:
     extraction = _minimal_extraction(cautions_and_restrictions=[])
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     caution_facts = [f for f in facts if f.key == f"{KEY_PREFIX}.cautions_and_restrictions"]
     assert caution_facts == []
@@ -345,7 +279,7 @@ def test_list_field_produces_one_fact_per_item() -> None:
             _item({"date": "1 June 1952", "category": "height", "full_text": "No over 4 storeys"}),
         ]
     )
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     covenant_facts = [f for f in facts if f.key == f"{KEY_PREFIX}.restrictive_covenants"]
     assert len(covenant_facts) == 2
@@ -367,7 +301,7 @@ def test_list_item_date_subfield_is_normalised() -> None:
             )
         ]
     )
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     charge_fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.charges")
     normalised = _as_dict(charge_fact.normalised_value)
@@ -379,10 +313,10 @@ def test_list_item_date_subfield_is_normalised() -> None:
 
 def test_list_item_status_reflects_its_own_confidence() -> None:
     extraction = _minimal_extraction(easements=[_item({"type": "right_of_way"}, confidence=0.5)])
-    facts = extraction_to_facts(extraction, matter_id="m1", document_id="d1")
+    facts = extraction_to_facts(extraction, document_id="d1")
 
     easement_fact = next(f for f in facts if f.key == f"{KEY_PREFIX}.easements")
-    assert easement_fact.status == FactStatus.NEEDS_CHECKING
+    assert easement_fact.status == "needs_checking"
 
 
 # =============================================================================
@@ -570,51 +504,37 @@ async def test_extract_title_report_facts_persists_expected_facts_for_lot_7_fixt
 
     # EX-T01: title number
     title_number_fact = by_key[f"{KEY_PREFIX}.title_number"][0]
-    assert title_number_fact.normalised_value == "LN782451"
-    # `document_text` is threaded through in production (see
-    # `extract_title_report_facts`), so the source's char offsets must be
-    # located against the *real* fixture PDF text, not left `None` -- this
-    # is the actual end-to-end wiring the unit tests for `_split_pages` and
-    # `_locate_quote` can't prove on their own.
-    title_number_source = title_number_fact.sources[0]
-    assert title_number_source["pdf_page_index"] == 1
-    assert document.extracted_text is not None
-    page_1_text = _split_pages(document.extracted_text)[1]
-    expected_start = page_1_text.find("LN782451")
-    assert expected_start != -1
-    assert title_number_source["char_start"] == expected_start
-    assert title_number_source["char_end"] == expected_start + len("LN782451")
-    assert (
-        page_1_text[title_number_source["char_start"] : title_number_source["char_end"]]
-        == "LN782451"
-    )
+    assert decode_value(title_number_fact.normalised_value) == "LN782451"
+    title_number_sources = decode_sources(title_number_fact.source)
+    assert title_number_sources[0]["pdf_page_index"] == 1
+    assert title_number_sources[0]["document_id"] == document.id
     # EX-T02: edition date, normalised to ISO 8601
-    assert by_key[f"{KEY_PREFIX}.edition_date"][0].normalised_value == "2023-11-22"
+    assert decode_value(by_key[f"{KEY_PREFIX}.edition_date"][0].normalised_value) == "2023-11-22"
     # EX-T03: tenure and class
-    assert by_key[f"{KEY_PREFIX}.tenure"][0].value == "Freehold"
-    assert by_key[f"{KEY_PREFIX}.title_class"][0].value == "Absolute"
+    assert decode_value(by_key[f"{KEY_PREFIX}.tenure"][0].value) == "Freehold"
+    assert decode_value(by_key[f"{KEY_PREFIX}.title_class"][0].value) == "Absolute"
     # EX-T04: address
-    address_value = by_key[f"{KEY_PREFIX}.property_address"][0].value
+    address_value = decode_value(by_key[f"{KEY_PREFIX}.property_address"][0].value)
     assert address_value is not None
     assert "Victoria Park Road" in address_value
     # EX-T05: site area, normalised to m2 (0.34 ha = 3400 m2)
     site_area_fact = by_key[f"{KEY_PREFIX}.property_site_area"][0]
-    assert site_area_fact.normalised_value == pytest.approx(3400.0)
+    assert decode_value(site_area_fact.normalised_value) == pytest.approx(3400.0)
     assert site_area_fact.unit == "ha"
     # EX-T08: registered owner, company name suffix normalised
     owner_fact = by_key[f"{KEY_PREFIX}.registered_owner_name"][0]
-    assert owner_fact.normalised_value == "Victoria Park Developments Limited"
+    assert decode_value(owner_fact.normalised_value) == "Victoria Park Developments Limited"
     # EX-T09: registered since, normalised to ISO 8601
-    assert by_key[f"{KEY_PREFIX}.registered_owner_registered_since"][0].normalised_value == (
-        "2019-03-14"
-    )
+    assert decode_value(
+        by_key[f"{KEY_PREFIX}.registered_owner_registered_since"][0].normalised_value
+    ) == "2019-03-14"
     # EX-T10: price paid, normalised to pence GBP
     price_fact = by_key[f"{KEY_PREFIX}.price_paid_amount"][0]
-    assert price_fact.normalised_value == 425_000_000
+    assert decode_value(price_fact.normalised_value) == 425_000_000
     assert price_fact.unit == "GBP"
     # EX-T11: charge, one item, lender name normalised
     charge_fact = by_key[f"{KEY_PREFIX}.charges"][0]
-    charge_normalised = _as_dict(charge_fact.normalised_value)
+    charge_normalised = _as_dict(decode_value(charge_fact.normalised_value))
     assert charge_normalised["lender_name"] == "Barclays Bank PLC"
     assert charge_normalised["date"] == "2019-03-15"
     # EX-T12-15: three restrictive covenants
@@ -628,11 +548,10 @@ async def test_extract_title_report_facts_persists_expected_facts_for_lot_7_fixt
     assert by_key.get(f"{KEY_PREFIX}.cautions_and_restrictions") is None
 
     # The deliberately below-threshold field is marked needs_checking.
-    assert by_key[f"{KEY_PREFIX}.property_description"][0].status == FactStatus.NEEDS_CHECKING
+    assert by_key[f"{KEY_PREFIX}.property_description"][0].status == "needs_checking"
 
-    # Every fact is scoped to the right matter and document.
+    # Every fact is scoped to the right matter.
     assert all(f.matter_id == matter_id for f in facts)
-    assert all(f.document_id == document.id for f in facts)
 
 
 async def test_extract_title_report_facts_are_actually_persisted_to_the_database(
@@ -644,8 +563,6 @@ async def test_extract_title_report_facts_are_actually_persisted_to_the_database
     matter_id, document = await _seed_matter_and_title_document(session)
 
     await extract_title_report_facts(session, matter_id=matter_id, document=document)
-
-    from sqlalchemy import func, select
 
     count = (
         await session.execute(
@@ -732,8 +649,6 @@ async def test_extract_title_report_facts_propagates_llm_failures(
         await extract_title_report_facts(session, matter_id=matter.id, document=document)
 
     # No partial facts were left behind by the failed run.
-    from sqlalchemy import func, select
-
     count = (
         await session.execute(
             select(func.count()).select_from(Fact).where(Fact.matter_id == matter.id)

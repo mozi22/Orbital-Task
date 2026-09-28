@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../types";
 import { ChatWindow } from "../ChatWindow";
@@ -17,6 +17,8 @@ function baseProps(overrides: Partial<Parameters<typeof ChatWindow>[0]> = {}) {
 		conversationId: "conv-1",
 		onSend: vi.fn(),
 		onUpload: vi.fn(),
+		onRunRiskReview: vi.fn(),
+		riskReviewRunning: false,
 		...overrides,
 	};
 }
@@ -56,5 +58,25 @@ describe("ChatWindow", () => {
 		expect(
 			screen.getAllByText("5/5 documents attached").length,
 		).toBeGreaterThan(0);
+	});
+
+	it("wires the Run Risk Review button through to onRunRiskReview and reflects riskReviewRunning", () => {
+		const onRunRiskReview = vi.fn();
+		renderChatWindow({
+			documentCount: 2,
+			onRunRiskReview,
+			riskReviewRunning: false,
+		});
+
+		const button = screen.getByRole("button", { name: /run risk review/i });
+		expect(button).toBeEnabled();
+		fireEvent.click(button);
+		expect(onRunRiskReview).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows the running state on the Run Risk Review button when a review is in flight", () => {
+		renderChatWindow({ documentCount: 2, riskReviewRunning: true });
+
+		expect(screen.getByRole("button", { name: /running/i })).toBeDisabled();
 	});
 });

@@ -13,7 +13,7 @@ easements[], noted_entries[], cautions_and_restrictions[].
 This module only extracts and persists *title-report* facts. Lease and
 environmental-report extraction are separate, parallel tickets (#40-#42)
 that write their own `key` namespace into the same shared `facts` table
-(see `takehome.db.models.Fact`) -- this module never reads or writes keys
+(see `takehome.services.fact`) -- this module never reads or writes keys
 outside the `title.` prefix.
 
 Per the "AI reads, code compares" design principle (requirements doc,
@@ -35,7 +35,7 @@ from pydantic_ai import Agent
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.config import settings  # noqa: F401 -- triggers ANTHROPIC_API_KEY export
-from takehome.db.models import Document, Fact, FactStatus
+from takehome.db.models import Document, Fact
 from takehome.pipeline.normalise import (
     NormalisationError,
     normalise_area,
@@ -43,13 +43,9 @@ from takehome.pipeline.normalise import (
     normalise_date,
     normalise_money,
 )
+from takehome.services.fact import NewFact, NewFactSource, compute_status, create_facts
 
 logger = structlog.get_logger()
-
-# Below this confidence, a fact is marked "needs_checking" and surfaced to
-# the solicitor for manual review (requirements doc, section 6, stage 3).
-# This is applied here in code, never left to the LLM's own judgement.
-NEEDS_CHECKING_THRESHOLD = 0.7
 
 # `key` prefix every `Fact` this module writes uses, so title-report facts
 # never collide with the sibling lease/environmental extraction tickets'
@@ -64,22 +60,14 @@ KEY_PREFIX = "title"
 
 class ExtractedSource(BaseModel):
     """One documented source for an extracted value (requirements doc's
-    `SourceSpan`, minus `document_id`/`char_start`/`char_end` -- those are
-    filled in by this module, not the LLM: `document_id` is already known
-    from the document being processed, and reliable character offsets
-    aren't something a language model can be trusted to report -- code
-    locates the quote in the page text afterward, see `_locate_quote` and
-    `_sources_to_dicts`. Locating the quote can fail (the LLM's copy of it
-    may not match the extracted PDF text byte-for-byte, e.g. different
-    whitespace collapsing) -- when it does, `char_start`/`char_end` are left
-    `None` in the persisted source rather than guessing a position; the
-    `quote`, page and clause reference are still always present for a human
-    to find the passage."""
+    `SourceSpan`, minus `document_id` -- that's already known from the
+    document being processed, filled in by this module rather than the LLM,
+    see `_sources_to_new_sources`). No character-offset fields: the
+    Milestone 2 PRD notes the assignment's own simplified `Source` model
+    omits them (text-highlighting a PDF page is explicitly out of scope
+    this milestone)."""
 
     pdf_page_index: int = Field(ge=1, description="1-based page number in the PDF")
-    printed_page_label: str | None = Field(
-        default=None, description='The page number printed on the page, e.g. "Page 4"'
-    )
     clause_ref: str | None = Field(
         default=None, description='e.g. "8.3.1", "Charges Register entry 1"'
     )
@@ -225,10 +213,10 @@ title_extraction_agent = Agent(
         "normalise dates, money or units yourself -- copy them verbatim), set found=false "
         "if the field genuinely isn't present anywhere in the document, give a confidence "
         "from 0 to 1 reflecting how certain you are the value is correct and complete, and "
-        "give at least one source (the 1-based PDF page number, the printed page label if "
-        "shown, a clause/entry reference if there is one, and an exact quote of at most 500 "
-        "characters copied verbatim from the document) for every field you did find. Never "
-        "fabricate a quote -- every quote must be text that actually appears in the document.\n\n"
+        "give at least one source (the 1-based PDF page number, a clause/entry reference if "
+        "there is one, and an exact quote of at most 500 characters copied verbatim from the "
+        "document) for every field you did find. Never fabricate a quote -- every quote must "
+        "be text that actually appears in the document.\n\n"
         "For repeating fields (charges, restrictive_covenants, easements, noted_entries, "
         "cautions_and_restrictions), return one list item per entry found in the document, "
         "an empty list if none are present -- an empty list is a meaningful, correct answer, "
@@ -248,42 +236,44 @@ _EXTRACTION_TEXT_LIMIT = 60_000
 # =============================================================================
 
 
-def _normalise_optional_date(raw: str | None) -> str | None:
+def _normalise_optional_date(raw: str | None) -> tuple[str | None, bool]:
+    """Returns (normalised_value, normalisation_failed)."""
     if raw is None:
-        return None
+        return None, False
     try:
-        return normalise_date(raw)
+        return normalise_date(raw), False
     except NormalisationError:
         logger.warning("Could not normalise date value", raw=raw)
-        return None
+        return None, True
 
 
-def _normalise_optional_money(raw: str | None) -> int | None:
+def _normalise_optional_money(raw: str | None) -> tuple[int | None, bool]:
+    """Returns (pence, normalisation_failed)."""
     if raw is None:
-        return None
+        return None, False
     try:
-        return normalise_money(raw)
+        return normalise_money(raw), False
     except NormalisationError:
         logger.warning("Could not normalise money value", raw=raw)
-        return None
+        return None, True
 
 
 def _normalise_optional_company_name(raw: str | None) -> str | None:
+    """Company-name normalisation never raises `NormalisationError` (see
+    `pipeline.normalise.normalise_company_name`'s docstring -- an
+    unrecognised suffix, or no suffix at all, is returned unchanged rather
+    than failing), so unlike the date/money/area normalisers this has no
+    `normalisation_failed` outcome to report."""
     if raw is None:
         return None
-    try:
-        return normalise_company_name(raw)
-    except NormalisationError:
-        logger.warning("Could not normalise company name value", raw=raw)
-        return None
+    return normalise_company_name(raw)
 
 
 _TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 
-def _normalise_optional_area(raw: str | None) -> tuple[float | None, str | None]:
-    """Returns (normalised_value_m2, unit_label), or (None, None) if the raw
-    string couldn't be normalised.
+def _normalise_optional_area(raw: str | None) -> tuple[float | None, str | None, bool]:
+    """Returns (value_m2, canonical_unit, normalisation_failed).
 
     Title-report site areas in this pipeline's documents are routinely
     written with a trailing alternate-unit parenthetical (e.g. "0.34
@@ -293,14 +283,14 @@ def _normalise_optional_area(raw: str | None) -> tuple[float | None, str | None]
     a title-report-specific quirk.
     """
     if raw is None:
-        return None, None
+        return None, None, False
     stripped = _TRAILING_PARENTHETICAL_RE.sub("", raw).strip()
     try:
         area = normalise_area(stripped)
     except NormalisationError:
         logger.warning("Could not normalise area value", raw=raw)
-        return None, None
-    return area.value_m2, area.canonical_unit
+        return None, None, True
+    return area.value_m2, area.canonical_unit, False
 
 
 def _normalise_optional_bool(raw: str | None) -> bool | None:
@@ -322,23 +312,28 @@ _AREA_FIELDS = {"property_site_area", "property_building_gross_internal_area"}
 _BOOL_FIELDS = {"is_summary"}
 
 
-def _normalise_scalar(field_name: str, raw_value: str | None) -> tuple[Any | None, str | None]:
+def _normalise_scalar(
+    field_name: str, raw_value: str | None
+) -> tuple[Any | None, str | None, bool]:
     """Normalise one scalar field's raw string value, returning
-    (normalised_value, unit). `unit` is only ever set for area fields."""
+    (normalised_value, unit, normalisation_failed). `unit` is only ever set
+    for area fields."""
     if raw_value is None:
-        return None, None
+        return None, None, False
     if field_name in _DATE_FIELDS:
-        return _normalise_optional_date(raw_value), None
+        value, failed = _normalise_optional_date(raw_value)
+        return value, None, failed
     if field_name in _MONEY_FIELDS:
-        return _normalise_optional_money(raw_value), "GBP"
+        value, failed = _normalise_optional_money(raw_value)
+        return value, "GBP", failed
     if field_name in _COMPANY_NAME_FIELDS:
-        return _normalise_optional_company_name(raw_value), None
+        return _normalise_optional_company_name(raw_value), None, False
     if field_name in _AREA_FIELDS:
-        value_m2, unit = _normalise_optional_area(raw_value)
-        return value_m2, unit
+        value_m2, unit, failed = _normalise_optional_area(raw_value)
+        return value_m2, unit, failed
     if field_name in _BOOL_FIELDS:
-        return _normalise_optional_bool(raw_value), None
-    return raw_value, None
+        return _normalise_optional_bool(raw_value), None, False
+    return raw_value, None, False
 
 
 # Per-list-type sub-fields to normalise inside each item's `value`/
@@ -348,153 +343,98 @@ _LIST_ITEM_DATE_FIELDS = {"date"}
 _LIST_ITEM_COMPANY_NAME_FIELDS = {"lender_name"}
 
 
-def _normalise_list_item(raw_item: dict[str, Any]) -> dict[str, Any]:
+def _normalise_list_item(raw_item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Returns (normalised_item, normalisation_failed) -- `failed` is set if
+    any sub-field with a normaliser couldn't be normalised."""
     normalised: dict[str, Any] = {}
+    any_failed = False
     for field_name, value in raw_item.items():
         if value is None:
             normalised[field_name] = None
         elif field_name in _LIST_ITEM_DATE_FIELDS and isinstance(value, str):
-            normalised[field_name] = _normalise_optional_date(value)
+            normalised_value, failed = _normalise_optional_date(value)
+            normalised[field_name] = normalised_value
+            any_failed = any_failed or failed
         elif field_name in _LIST_ITEM_COMPANY_NAME_FIELDS and isinstance(value, str):
             normalised[field_name] = _normalise_optional_company_name(value)
         else:
             normalised[field_name] = value
-    return normalised
+    return normalised, any_failed
 
 
-def _status_for(confidence: float) -> FactStatus:
-    if confidence < NEEDS_CHECKING_THRESHOLD:
-        return FactStatus.NEEDS_CHECKING
-    return FactStatus.EXTRACTED
-
-
-# Matches the page markers `services/document.py`'s PyMuPDF extraction
-# inserts into `Document.extracted_text` (e.g. "--- Page 3 ---\n...").
-_PAGE_MARKER_RE = re.compile(r"--- Page (\d+) ---\n")
-
-
-def _split_pages(document_text: str) -> dict[int, str]:
-    """Split a document's full extracted text (as produced by
-    `services/document.py`) back into its per-page text, keyed by the same
-    1-based `pdf_page_index` the extraction agent reports sources against."""
-    markers = list(_PAGE_MARKER_RE.finditer(document_text))
-    pages: dict[int, str] = {}
-    for i, marker in enumerate(markers):
-        page_num = int(marker.group(1))
-        start = marker.end()
-        end = markers[i + 1].start() if i + 1 < len(markers) else len(document_text)
-        pages[page_num] = document_text[start:end]
-    return pages
-
-
-def _locate_quote(page_text: str, quote: str) -> tuple[int, int] | None:
-    """Find `quote`'s character offsets within `page_text`, for the
-    requirements doc's `SourceSpan.char_start`/`char_end` ("position in the
-    page text, for highlighting"). Returns `None` if the quote can't be
-    found verbatim on that page -- e.g. the LLM's copy doesn't match the
-    extracted PDF text exactly (whitespace collapsing is the common case) --
-    rather than guessing a position from a fuzzy match."""
-    index = page_text.find(quote)
-    if index == -1:
-        return None
-    return index, index + len(quote)
-
-
-def _sources_to_dicts(
-    sources: list[ExtractedSource],
-    document_id: str,
-    *,
-    pages: dict[int, str] | None = None,
-) -> list[dict[str, Any]]:
+def _sources_to_new_sources(
+    sources: list[ExtractedSource], document_id: str
+) -> list[NewFactSource]:
     """Attach `document_id` (known from the document being processed, not
-    something the LLM reports) to each of the LLM's reported sources, and
-    locate each quote's character offsets within its page's text via
-    `_locate_quote`. `pages` is the document's text already split by
-    `_split_pages`; when it's not supplied (e.g. a caller with no document
-    text on hand) or the quote can't be located, `char_start`/`char_end`
-    are left `None` rather than fabricated."""
-    dicts: list[dict[str, Any]] = []
-    for source in sources:
-        char_start: int | None = None
-        char_end: int | None = None
-        if pages is not None:
-            page_text = pages.get(source.pdf_page_index)
-            if page_text is not None:
-                located = _locate_quote(page_text, source.quote)
-                if located is not None:
-                    char_start, char_end = located
-        dicts.append(
-            {
-                "document_id": document_id,
-                "pdf_page_index": source.pdf_page_index,
-                "printed_page_label": source.printed_page_label,
-                "clause_ref": source.clause_ref,
-                "quote": source.quote,
-                "char_start": char_start,
-                "char_end": char_end,
-            }
+    something the LLM reports) to each of the LLM's reported sources."""
+    return [
+        NewFactSource(
+            document_id=document_id,
+            pdf_page_index=source.pdf_page_index,
+            clause_ref=source.clause_ref,
+            quote=source.quote,
         )
-    return dicts
+        for source in sources
+    ]
 
 
 def _build_scalar_fact(
     *,
-    matter_id: str,
     document_id: str,
     field_name: str,
     scalar: ExtractedScalar,
-    pages: dict[int, str] | None,
-) -> Fact:
+) -> NewFact:
     key = f"{KEY_PREFIX}.{field_name}"
     if not scalar.found:
-        return Fact(
-            matter_id=matter_id,
-            document_id=document_id,
+        return NewFact(
             key=key,
             value=None,
             normalised_value=None,
             unit=None,
             sources=[],
             confidence=scalar.confidence,
-            status=FactStatus.NOT_FOUND,
+            status=compute_status(value=None, confidence=scalar.confidence, normalisation_failed=False),
         )
 
-    normalised_value, unit = _normalise_scalar(field_name, scalar.value)
-    return Fact(
-        matter_id=matter_id,
-        document_id=document_id,
+    normalised_value, unit, normalisation_failed = _normalise_scalar(field_name, scalar.value)
+    return NewFact(
         key=key,
         value=scalar.value,
         normalised_value=normalised_value,
         unit=unit,
-        sources=_sources_to_dicts(scalar.sources, document_id, pages=pages),
+        sources=_sources_to_new_sources(scalar.sources, document_id),
         confidence=scalar.confidence,
-        status=_status_for(scalar.confidence),
+        status=compute_status(
+            value=scalar.value,
+            confidence=scalar.confidence,
+            normalisation_failed=normalisation_failed,
+        ),
     )
 
 
 def _build_list_item_facts(
     *,
-    matter_id: str,
     document_id: str,
     field_name: str,
     items: list[ExtractedListItem],
-    pages: dict[int, str] | None,
-) -> list[Fact]:
+) -> list[NewFact]:
     key = f"{KEY_PREFIX}.{field_name}"
-    facts: list[Fact] = []
+    facts: list[NewFact] = []
     for item in items:
+        normalised_value, normalisation_failed = _normalise_list_item(item.value)
         facts.append(
-            Fact(
-                matter_id=matter_id,
-                document_id=document_id,
+            NewFact(
                 key=key,
                 value=item.value,
-                normalised_value=_normalise_list_item(item.value),
+                normalised_value=normalised_value,
                 unit=None,
-                sources=_sources_to_dicts(item.sources, document_id, pages=pages),
+                sources=_sources_to_new_sources(item.sources, document_id),
                 confidence=item.confidence,
-                status=_status_for(item.confidence),
+                status=compute_status(
+                    value=item.value,
+                    confidence=item.confidence,
+                    normalisation_failed=normalisation_failed,
+                ),
             )
         )
     return facts
@@ -520,43 +460,30 @@ _LIST_FIELD_NAMES = [
 def extraction_to_facts(
     extraction: TitleReportExtraction,
     *,
-    matter_id: str,
     document_id: str,
-    document_text: str | None = None,
-) -> list[Fact]:
-    """Turn one LLM extraction result into the `Fact` rows it represents,
+) -> list[NewFact]:
+    """Turn one LLM extraction result into the `NewFact`s it represents,
     with normalisation already applied -- pure, no I/O, so it's testable
     without a database or a real LLM call (see `extract_title_report_facts`
-    for the function that actually calls the LLM and persists these).
-
-    `document_text` is the document's full extracted text (the same
-    "--- Page N ---"-marked text the extraction agent was given), used to
-    locate each source quote's character offsets via `_locate_quote`. It's
-    optional -- callers that don't have it on hand (or tests that only care
-    about the value/normalisation wiring) simply get sources with
-    `char_start`/`char_end` left `None`."""
-    pages = _split_pages(document_text) if document_text else None
-    facts: list[Fact] = []
+    for the function that actually calls the LLM and persists these via
+    `takehome.services.fact.create_facts`)."""
+    facts: list[NewFact] = []
     for field_name in _SCALAR_FIELD_NAMES:
         scalar = getattr(extraction, field_name)
         facts.append(
             _build_scalar_fact(
-                matter_id=matter_id,
                 document_id=document_id,
                 field_name=field_name,
                 scalar=scalar,
-                pages=pages,
             )
         )
     for field_name in _LIST_FIELD_NAMES:
         items = getattr(extraction, field_name)
         facts.extend(
             _build_list_item_facts(
-                matter_id=matter_id,
                 document_id=document_id,
                 field_name=field_name,
                 items=items,
-                pages=pages,
             )
         )
     return facts
@@ -570,7 +497,8 @@ async def extract_title_report_facts(
     Calls the Sonnet-backed extraction agent with the document's already-
     extracted PDF text (see `services/document.py`'s PyMuPDF extraction,
     reused unchanged here per the Milestone 2 PRD), converts the result into
-    normalised `Fact` rows via `extraction_to_facts`, and commits them.
+    normalised `NewFact`s via `extraction_to_facts`, and persists them via
+    `takehome.services.fact.create_facts`.
 
     Returns the created `Fact` rows (already persisted). Returns an empty
     list without calling the LLM if `document.extracted_text` is empty --
@@ -589,13 +517,8 @@ async def extract_title_report_facts(
         f"Extract title-report facts from the following document:\n\n{truncated}"
     )
 
-    facts = extraction_to_facts(
-        result.output, matter_id=matter_id, document_id=document.id, document_text=text
-    )
-    session.add_all(facts)
-    await session.commit()
-    for fact in facts:
-        await session.refresh(fact)
+    new_facts = extraction_to_facts(result.output, document_id=document.id)
+    facts = await create_facts(session, matter_id, new_facts)
 
     logger.info(
         "Extracted title-report facts",

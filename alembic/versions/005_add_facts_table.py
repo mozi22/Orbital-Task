@@ -19,36 +19,31 @@ down_revision: str | None = "004_merge_heads"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-# Stored as `.value` labels ("extracted", not "EXTRACTED"), matching every
-# other native enum this project defines (see `document_type`).
-_FACT_STATUS_VALUES = ("extracted", "needs_checking", "not_found", "edited_by_user")
-
 
 def upgrade() -> None:
-    # Unlike `op.add_column` (see `003_add_document_type.py`), `op.create_table`
-    # already creates any `sa.Enum` column's Postgres type itself as part of
-    # the table DDL -- an extra explicit `.create()` call here would issue a
-    # duplicate `CREATE TYPE` and fail.
-    fact_status = sa.Enum(*_FACT_STATUS_VALUES, name="fact_status")
-
     op.create_table(
         "facts",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("matter_id", sa.String(), nullable=False),
-        sa.Column("document_id", sa.String(), nullable=False),
-        # Dotted, document-type-prefixed field name (e.g.
-        # "title.registered_owner_name") -- see `Fact`'s own docstring for
-        # why this is a plain string column, not an enum: it is shared
-        # across every document type's extraction (issues #39-#42), each
-        # owning its own namespace of keys, so a fixed enum here would
-        # require every one of those tickets to migrate the same column.
+        # Dotted field name, e.g. "environmental.report_reference" -- not
+        # unique alone, since a pipeline re-run inserts a fresh set of rows
+        # rather than upserting in place (see the requirements doc's
+        # "Re-runs" section).
         sa.Column("key", sa.String(), nullable=False),
-        sa.Column("value", sa.JSON(), nullable=True),
-        sa.Column("normalised_value", sa.JSON(), nullable=True),
+        # `value`, `normalised_value` and `source` are JSON-encoded text --
+        # kept as plain Text (not a Postgres-native JSON/JSONB column) to
+        # match this schema's existing convention (see e.g.
+        # `matters.gate_result`) of plain string/text columns over native
+        # Postgres types.
+        sa.Column("value", sa.Text(), nullable=True),
+        sa.Column("normalised_value", sa.Text(), nullable=True),
         sa.Column("unit", sa.String(), nullable=True),
-        sa.Column("sources", sa.JSON(), nullable=False),
+        sa.Column("source", sa.Text(), nullable=True),
         sa.Column("confidence", sa.Float(), nullable=False),
-        sa.Column("status", fact_status, nullable=False),
+        # found | not_found | needs_checking -- plain string, not a DB enum,
+        # matching e.g. `matters.gate_result`'s own convention. Validated in
+        # application code (`takehome.services.fact`), not at the DB level.
+        sa.Column("status", sa.String(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(),
@@ -56,17 +51,15 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.ForeignKeyConstraint(["matter_id"], ["matters.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["matter_id"],
+            ["matters.id"],
+            ondelete="CASCADE",
+        ),
     )
-    op.create_index("ix_facts_matter_id", "facts", ["matter_id"])
-    op.create_index("ix_facts_document_id", "facts", ["document_id"])
-    op.create_index("ix_facts_key", "facts", ["key"])
+    op.create_index("ix_facts_matter_id_key", "facts", ["matter_id", "key"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_facts_key", table_name="facts")
-    op.drop_index("ix_facts_document_id", table_name="facts")
-    op.drop_index("ix_facts_matter_id", table_name="facts")
+    op.drop_index("ix_facts_matter_id_key", table_name="facts")
     op.drop_table("facts")
-    sa.Enum(name="fact_status").drop(op.get_bind(), checkfirst=True)

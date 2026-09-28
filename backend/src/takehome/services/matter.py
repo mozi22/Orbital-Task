@@ -25,6 +25,16 @@ async def get_matter_for_conversation(
     return result.scalar_one_or_none()
 
 
+async def get_matter_by_id(session: AsyncSession, matter_id: str) -> Matter | None:
+    """Get a Matter by its own id (== the trigger endpoint's `run_id`, see
+    `RiskReviewTriggerResponse`). Used by the progress-events endpoint
+    (issue #38) to 404 on an unknown/never-triggered run before subscribing
+    it to the progress broker."""
+    stmt = select(Matter).where(Matter.id == matter_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def get_or_create_matter(
     session: AsyncSession, conversation_id: str
 ) -> tuple[Matter, bool]:

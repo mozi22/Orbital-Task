@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Literal
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.responses import StreamingResponse
 
-from takehome.db.session import get_session
+from takehome.db.session import get_session, get_session_factory
+from takehome.pipeline.progress import get_progress_broker
 from takehome.pipeline.run import run_stub_pipeline
 from takehome.services.conversation import get_conversation
 from takehome.services.document import get_documents_for_conversation
-from takehome.services.matter import get_or_create_matter
+from takehome.services.matter import get_matter_by_id, get_or_create_matter
+from takehome.web.sse import sse_event, sse_response
 
 logger = structlog.get_logger()
 
@@ -47,6 +51,7 @@ async def trigger_risk_review(
     conversation_id: str,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> RiskReviewTriggerResponse:
     """Trigger a risk-review run for a conversation.
 
@@ -87,6 +92,43 @@ async def trigger_risk_review(
         matter_id=matter.id,
         conversation_id=conversation_id,
         document_ids=document_ids,
+        session_factory=session_factory,
     )
 
     return RiskReviewTriggerResponse(run_id=matter.id, status="running")
+
+
+@router.get("/api/matters/{run_id}/events")
+async def stream_risk_review_progress(
+    run_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """Stream progress events for an in-flight (or already-finished)
+    risk-review run over SSE (issue #38), reusing the same `text/event-stream`
+    shape the chat message stream (`messages.send_message`) uses.
+
+    `run_id` is the Matter id `trigger_risk_review` returned. Unlike the chat
+    stream, this doesn't do any work itself -- it only subscribes to
+    `takehome.pipeline.progress`'s broker, which the background pipeline job
+    publishes into independently of this request. That means a client can
+    open this stream before, during, or after the run: it always receives
+    the full event sequence from the start (`classify` -> one `extract` per
+    document -> one `gate` per gate rule -> one `rules` per remaining rule ->
+    a terminal `done`), because the broker buffers every event rather than
+    only fanning out live ones.
+
+    Returns 404 if `run_id` doesn't correspond to any Matter that has ever
+    had a risk review triggered.
+    """
+    matter = await get_matter_by_id(session, run_id)
+    if matter is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "matter_not_found", "message": "Risk-review run not found"},
+        )
+
+    async def event_stream() -> AsyncIterator[str]:
+        async for event in get_progress_broker().subscribe(run_id):
+            yield sse_event(event)
+
+    return sse_response(event_stream())

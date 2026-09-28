@@ -43,11 +43,11 @@ def test_upgrade_to_head_succeeds_from_a_fresh_database(reset_schema) -> None:
     previously raised `alembic.util.exc.CommandError: Multiple head
     revisions are present`.
 
-    Upgrades to `004_merge_heads` itself, not the literal string "head":
-    later migrations (e.g. issue #39's `005_facts`) legitimately move head
-    on past the merge revision, and this test's job is only to prove the
-    merge revision itself resolves the multi-head ambiguity, not that it
-    stays the newest migration forever."""
+    Upgrades to `004_merge_heads` specifically (not `"head"`): this test is
+    scoped to the merge revision itself resolving cleanly, not to whatever
+    the schema's true head happens to be after later migrations (e.g. #41's
+    `005_facts`) land on top of it.
+    """
     cfg = reset_schema
 
     command.upgrade(cfg, "004_merge_heads")
@@ -71,9 +71,8 @@ def test_merge_migration_makes_no_schema_changes_of_its_own(reset_schema) -> Non
     tables/columns of its own, and downgrading past it removes nothing that
     `003_document_type`/`003_matters` didn't already own.
 
-    Upgrades to `004_merge_heads` itself (see
-    `test_upgrade_to_head_succeeds_from_a_fresh_database` above for why this
-    isn't the literal string "head")."""
+    Upgrades to `004_merge_heads` specifically (not `"head"`), for the same
+    reason as `test_upgrade_to_head_succeeds_from_a_fresh_database` above."""
     cfg = reset_schema
     command.upgrade(cfg, "003_document_type")
     command.upgrade(cfg, "003_matters")
