@@ -1,4 +1,4 @@
-import { Paperclip, SendHorizontal } from "lucide-react";
+import { Loader2, Paperclip, SendHorizontal, ShieldAlert } from "lucide-react";
 import { type KeyboardEvent, useCallback, useRef, useState } from "react";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -7,6 +7,21 @@ interface ChatInputProps {
 	onSend: (content: string) => void;
 	onUpload: (file: File) => void | Promise<void>;
 	onUploadSettled?: () => void;
+	/**
+	 * Triggers a risk-review run against the conversation's currently
+	 * attached documents (POST /api/conversations/{id}/risk-review — see the
+	 * Milestone 2 PRD). May reject on failure; the caller is responsible for
+	 * surfacing that failure, matching the `onUpload` contract above.
+	 */
+	onRunRiskReview: () => void | Promise<void>;
+	/**
+	 * True while a risk-review run is in flight for this conversation (from
+	 * the moment the trigger request succeeds until a later ticket's SSE
+	 * completion event turns it back off — see #38/#43). Disables the button
+	 * and swaps its label so the caller can't fire off a second concurrent
+	 * run.
+	 */
+	riskReviewRunning: boolean;
 	disabled: boolean;
 	/** Number of documents currently attached to this conversation. */
 	documentCount: number;
@@ -18,12 +33,16 @@ export function ChatInput({
 	onSend,
 	onUpload,
 	onUploadSettled,
+	onRunRiskReview,
+	riskReviewRunning,
 	disabled,
 	documentCount,
 	maxDocuments,
 }: ChatInputProps) {
 	const atCap = documentCount >= maxDocuments;
 	const attachedLabel = `${documentCount}/${maxDocuments} documents attached`;
+	const hasDocuments = documentCount > 0;
+	const riskReviewDisabled = !hasDocuments || riskReviewRunning;
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
@@ -55,6 +74,14 @@ export function ChatInput({
 		textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
 	}, []);
 
+	const handleRunRiskReview = useCallback(() => {
+		if (riskReviewDisabled) return;
+		// onRunRiskReview may reject on failure; the caller (App) surfaces
+		// that failure via visible error state, so it's safe to swallow the
+		// rejection here rather than throw inside a click handler.
+		Promise.resolve(onRunRiskReview()).catch(() => {});
+	}, [onRunRiskReview, riskReviewDisabled]);
+
 	const handleFileChange = useCallback(
 		(e: React.ChangeEvent<HTMLInputElement>) => {
 			const file = e.target.files?.[0];
@@ -78,6 +105,40 @@ export function ChatInput({
 
 	return (
 		<div className="border-t border-neutral-200 bg-white p-3">
+			<div className="mb-2 flex justify-end">
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<div>
+							<Button
+								variant="secondary"
+								size="sm"
+								className="gap-1.5"
+								disabled={riskReviewDisabled}
+								onClick={handleRunRiskReview}
+							>
+								{riskReviewRunning ? (
+									<>
+										<Loader2 className="h-3.5 w-3.5 animate-spin" />
+										Running...
+									</>
+								) : (
+									<>
+										<ShieldAlert className="h-3.5 w-3.5" />
+										Run Risk Review
+									</>
+								)}
+							</Button>
+						</div>
+					</TooltipTrigger>
+					<TooltipContent>
+						{!hasDocuments
+							? "Attach at least one document to run a risk review"
+							: riskReviewRunning
+								? "A risk review is already running for this conversation"
+								: "Run a risk review across the attached documents"}
+					</TooltipContent>
+				</Tooltip>
+			</div>
 			<div className="flex items-end gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
 				<Tooltip>
 					<TooltipTrigger asChild>

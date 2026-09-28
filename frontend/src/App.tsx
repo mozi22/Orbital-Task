@@ -6,6 +6,7 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { useConversations } from "./hooks/use-conversations";
 import { useDocuments } from "./hooks/use-documents";
 import { useMessages } from "./hooks/use-messages";
+import { useRiskReview } from "./hooks/use-risk-review";
 import { MAX_DOCUMENTS_PER_CONVERSATION } from "./lib/api";
 
 export default function App() {
@@ -36,6 +37,19 @@ export default function App() {
 		error: documentError,
 		refresh: refreshDocuments,
 	} = useDocuments(selectedId);
+
+	const {
+		running: riskReviewRunning,
+		error: riskReviewError,
+		trigger: triggerRiskReview,
+	} = useRiskReview(selectedId);
+
+	// `triggerRiskReview` throws on failure rather than swallowing it, so a
+	// failed trigger here propagates to the caller (ChatInput), matching
+	// `handleUpload`'s shape above.
+	const handleRunRiskReview = useCallback(async () => {
+		await triggerRiskReview();
+	}, [triggerRiskReview]);
 
 	const handleSend = useCallback(
 		async (content: string) => {
@@ -94,7 +108,10 @@ export default function App() {
 					onSend={handleSend}
 					onUpload={handleUpload}
 					onUploadSettled={handleUploadSettled}
+					onRunRiskReview={handleRunRiskReview}
+					riskReviewRunning={riskReviewRunning}
 					documentError={documentError}
+					riskReviewError={riskReviewError}
 				/>
 
 				<DocumentViewer

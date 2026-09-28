@@ -25,21 +25,27 @@ def upgrade() -> None:
         "facts",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("matter_id", sa.String(), nullable=False),
+        # Dotted field name, e.g. "environmental.report_reference" -- not
+        # unique alone, since a pipeline re-run inserts a fresh set of rows
+        # rather than upserting in place (see the requirements doc's
+        # "Re-runs" section).
         sa.Column("key", sa.String(), nullable=False),
-        sa.Column("value", sa.JSON(), nullable=True),
-        sa.Column("normalised_value", sa.JSON(), nullable=True),
+        # `value`, `normalised_value` and `source` are JSON-encoded text --
+        # kept as plain Text (not a Postgres-native JSON/JSONB column) to
+        # match this schema's existing convention (see e.g.
+        # `matters.gate_result`) of plain string/text columns over native
+        # Postgres types.
+        sa.Column("value", sa.Text(), nullable=True),
+        sa.Column("normalised_value", sa.Text(), nullable=True),
         sa.Column("unit", sa.String(), nullable=True),
-        sa.Column("sources", sa.JSON(), nullable=False),
+        sa.Column("source", sa.Text(), nullable=True),
         sa.Column("confidence", sa.Float(), nullable=False),
+        # found | not_found | needs_checking -- plain string, not a DB enum,
+        # matching e.g. `matters.gate_result`'s own convention. Validated in
+        # application code (`takehome.services.fact`), not at the DB level.
         sa.Column("status", sa.String(), nullable=False),
         sa.Column(
             "created_at",
-            sa.DateTime(),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
             sa.DateTime(),
             server_default=sa.text("now()"),
             nullable=False,
@@ -50,11 +56,10 @@ def upgrade() -> None:
             ["matters.id"],
             ondelete="CASCADE",
         ),
-        sa.UniqueConstraint("matter_id", "key", name="uq_facts_matter_id_key"),
     )
-    op.create_index("ix_facts_matter_id", "facts", ["matter_id"])
+    op.create_index("ix_facts_matter_id_key", "facts", ["matter_id", "key"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_facts_matter_id", table_name="facts")
+    op.drop_index("ix_facts_matter_id_key", table_name="facts")
     op.drop_table("facts")
