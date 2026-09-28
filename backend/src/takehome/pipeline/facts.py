@@ -23,10 +23,20 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import delete
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from takehome.db.models import Fact, FactStatus
+
+# Below this, a fact is marked `needs_checking` regardless of whether
+# extraction/normalisation otherwise succeeded (requirements doc section 7:
+# "confidence... Below 0.7 = needs checking"). Lives here -- not in a
+# document-type-specific extractor module -- so every sibling extractor
+# (#39 title, #41 environmental, #42 lease remaining terms) shares the same
+# threshold instead of each redefining (and potentially drifting from) its
+# own copy.
+NEEDS_CHECKING_CONFIDENCE_THRESHOLD = 0.7
 
 
 class SourceSpan(BaseModel):
@@ -68,36 +78,73 @@ async def save_facts(
     Re-running extraction (e.g. a document was replaced) is expected to
     supersede previous facts for the same keys entirely, per the
     requirements doc's re-run semantics (section 6: "Replacing a document
-    re-runs stages 2 to 7 for the whole matter") -- so this deletes any
-    existing rows matching this batch's own keys before inserting, rather
-    than accumulating duplicate rows per key (which the `uq_facts_matter_id_
-    key` constraint would reject anyway). It only touches rows whose key is
-    in this batch, so one extractor's save call never deletes another
-    document type's facts for the same Matter.
+    re-runs stages 2 to 7 for the whole matter"). This is implemented as a
+    single atomic `INSERT ... ON CONFLICT (matter_id, key) DO UPDATE` upsert
+    per row, rather than a separate delete-then-insert: a delete-then-insert
+    is only race-safe for *disjoint* key namespaces (different extractors
+    writing different `key` prefixes never touch each other's rows), but two
+    concurrent callers writing the *same* key set (a duplicate pipeline
+    trigger, a retry after a timeout, the same document re-uploaded twice)
+    could otherwise both see zero existing rows under READ COMMITTED and
+    then race on the insert (`IntegrityError` on `uq_facts_matter_id_key`),
+    or a still-pending delete from a stale run could delete rows a
+    concurrent run just committed. `ON CONFLICT DO UPDATE` makes each row's
+    check-then-act atomic at the database level -- no separate row lock
+    (e.g. `services.conversation.lock_conversation_for_update`'s pattern) is
+    needed since Postgres itself serializes conflicting upserts on the same
+    unique key. It still only touches rows whose key is in this batch, so
+    one extractor's save call never deletes another document type's facts
+    for the same Matter.
 
     Commits its own transaction, consistent with every other write in this
     codebase's service layer (see `services.matter.get_or_create_matter`'s
     own docstring for the same convention and its trade-offs).
     """
-    keys = [f.key for f in facts]
-    if keys:
-        await session.execute(delete(Fact).where(Fact.matter_id == matter_id, Fact.key.in_(keys)))
+    if not facts:
+        return []
 
-    rows = [
-        Fact(
-            matter_id=matter_id,
-            key=f.key,
-            value=f.value,
-            normalised_value=f.normalised_value,
-            unit=f.unit,
-            sources=[s.model_dump() for s in f.sources],
-            confidence=f.confidence,
-            status=f.status.value,
-        )
+    values = [
+        {
+            "matter_id": matter_id,
+            "key": f.key,
+            "value": f.value,
+            "normalised_value": f.normalised_value,
+            "unit": f.unit,
+            "sources": [s.model_dump() for s in f.sources],
+            "confidence": f.confidence,
+            "status": f.status.value,
+        }
         for f in facts
     ]
-    session.add_all(rows)
+
+    stmt = pg_insert(Fact).values(values)
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_facts_matter_id_key",
+        set_={
+            "value": stmt.excluded.value,
+            "normalised_value": stmt.excluded.normalised_value,
+            "unit": stmt.excluded.unit,
+            "sources": stmt.excluded.sources,
+            "confidence": stmt.excluded.confidence,
+            "status": stmt.excluded.status,
+            "updated_at": func.now(),
+        },
+    )
+    await session.execute(stmt)
     await session.commit()
-    for row in rows:
-        await session.refresh(row)
-    return rows
+
+    # A single follow-up select for every row in this batch, rather than a
+    # sequential `session.refresh()` per row -- `services.conversation.
+    # create_conversation`'s own precedent already establishes that this
+    # codebase relies on Postgres populating timestamp columns rather than
+    # refreshing each row individually; an `ON CONFLICT DO UPDATE` upsert
+    # can't use a plain client-side `RETURNING` from an ORM `INSERT` the way
+    # a simple insert can (the updated branch's timestamps are DB-computed
+    # via `func.now()` above), so one batched select is the equivalent
+    # single-round-trip fetch for this shape of write.
+    keys = [f.key for f in facts]
+    result = await session.execute(
+        select(Fact).where(Fact.matter_id == matter_id, Fact.key.in_(keys))
+    )
+    rows_by_key = {row.key: row for row in result.scalars().all()}
+    return [rows_by_key[f.key] for f in facts]

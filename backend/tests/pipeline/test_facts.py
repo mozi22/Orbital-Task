@@ -9,6 +9,7 @@ migration itself (see `backend/tests/db/test_facts_table.py` for that).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -26,6 +27,7 @@ from takehome.pipeline.extract_lease_core_terms import (
     lease_core_terms_agent,
 )
 from takehome.pipeline.facts import ExtractedFact, SourceSpan, save_facts
+from tests.conftest import TestSessionLocal
 
 
 async def _make_matter(session: AsyncSession) -> str:
@@ -167,6 +169,58 @@ async def test_save_facts_for_one_key_set_does_not_delete_other_keys(session: As
     result = await session.execute(select(Fact).where(Fact.matter_id == matter_id))
     keys = {row.key for row in result.scalars().all()}
     assert keys == {"lease.landlord.name", "lease.tenant.name"}
+
+
+async def test_concurrent_save_facts_calls_for_the_same_keys_do_not_race(
+    session: AsyncSession,
+) -> None:
+    """Two concurrent `save_facts` calls writing the *same* key set for the
+    same Matter (a duplicate pipeline trigger, a retry after a timeout, the
+    same document re-uploaded twice) must not raise an unhandled
+    `IntegrityError` on `uq_facts_matter_id_key`, and must not silently lose
+    one writer's committed row -- exactly one row per key must survive, with
+    one of the two writers' values (whichever committed last), never zero
+    and never two.
+
+    Each call runs on its own session/connection (mirroring the real
+    per-request session lifecycle and `test_document.py`'s own
+    `test_concurrent_uploads_at_cap_cannot_exceed_the_limit` pattern), so the
+    only thing preventing a lost update or a duplicate-key crash is
+    `save_facts`'s own atomicity (the `ON CONFLICT DO UPDATE` upsert), not
+    test-level sequencing.
+    """
+    matter_id = await _make_matter(session)
+
+    async def _save(value: str) -> list[Fact] | Exception:
+        async with TestSessionLocal() as own_session:
+            try:
+                return await save_facts(
+                    own_session,
+                    matter_id,
+                    [
+                        ExtractedFact(
+                            key="lease.landlord.name",
+                            value=value,
+                            sources=[],
+                            confidence=0.9,
+                            status=FactStatus.EXTRACTED,
+                        )
+                    ],
+                )
+            except Exception as e:  # noqa: BLE001 -- we assert none happened below
+                return e
+
+    results = await asyncio.gather(_save("Acme Ltd"), _save("Acme Holdings Ltd"))
+
+    errors = [r for r in results if isinstance(r, Exception)]
+    assert errors == [], f"save_facts raised under concurrent same-key writers: {errors}"
+
+    result = await session.execute(
+        select(Fact).where(Fact.matter_id == matter_id, Fact.key == "lease.landlord.name")
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 1
+    assert rows[0].value in ("Acme Ltd", "Acme Holdings Ltd")
 
 
 async def test_extracted_lease_facts_can_be_saved_end_to_end(session: AsyncSession) -> None:

@@ -31,9 +31,10 @@ from pydantic_ai import Agent
 
 from takehome.config import settings  # noqa: F401 -- triggers ANTHROPIC_API_KEY export
 from takehome.db.models import FactStatus
-from takehome.pipeline.facts import ExtractedFact, SourceSpan
+from takehome.pipeline.facts import NEEDS_CHECKING_CONFIDENCE_THRESHOLD, ExtractedFact, SourceSpan
 from takehome.pipeline.normalise import (
     NormalisationError,
+    NormalisedArea,
     normalise_area,
     normalise_company_name,
     normalise_date,
@@ -41,11 +42,6 @@ from takehome.pipeline.normalise import (
 )
 
 logger = structlog.get_logger()
-
-# Below this, a fact is marked `needs_checking` regardless of whether
-# extraction/normalisation otherwise succeeded (requirements doc section 7:
-# "confidence... Below 0.7 = needs checking").
-_NEEDS_CHECKING_CONFIDENCE_THRESHOLD = 0.7
 
 # Cap how much extracted text is sent to the extraction call, mirroring
 # `services.llm.classify_document_type`'s own truncation -- a lease's core
@@ -70,7 +66,7 @@ class TextField(BaseModel):
     value: str | None = None
     quote: str | None = None
     page: int | None = None
-    confidence: float = 0.0
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class BoolField(BaseModel):
@@ -80,7 +76,7 @@ class BoolField(BaseModel):
     value: bool | None = None
     quote: str | None = None
     page: int | None = None
-    confidence: float = 0.0
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ListField(BaseModel):
@@ -90,7 +86,7 @@ class ListField(BaseModel):
     value: list[str] | None = None
     quote: str | None = None
     page: int | None = None
-    confidence: float = 0.0
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class PartyExtraction(BaseModel):
@@ -244,9 +240,7 @@ def _to_fact(
             normalised_value = None
             status = FactStatus.NEEDS_CHECKING
 
-    if isinstance(normalised_value, type(None)):
-        pass
-    elif hasattr(normalised_value, "value_m2"):
+    if isinstance(normalised_value, NormalisedArea):
         # `normalise_area` returns a `NormalisedArea` dataclass -- store it
         # as a plain JSON-serialisable dict, and surface its canonical unit
         # at the top level (matching every other field's `unit` column).
@@ -258,7 +252,7 @@ def _to_fact(
             "unit": area.canonical_unit,
         }
 
-    if field.confidence < _NEEDS_CHECKING_CONFIDENCE_THRESHOLD:
+    if field.confidence < NEEDS_CHECKING_CONFIDENCE_THRESHOLD:
         status = FactStatus.NEEDS_CHECKING
 
     return ExtractedFact(
@@ -303,7 +297,7 @@ def _to_list_fact(key: str, field: ListField, document_id: str) -> ExtractedFact
             normalised.append(None)
             status = FactStatus.NEEDS_CHECKING
 
-    if field.confidence < _NEEDS_CHECKING_CONFIDENCE_THRESHOLD:
+    if field.confidence < NEEDS_CHECKING_CONFIDENCE_THRESHOLD:
         status = FactStatus.NEEDS_CHECKING
 
     return ExtractedFact(

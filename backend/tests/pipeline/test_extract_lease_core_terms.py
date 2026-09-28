@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from pydantic import ValidationError
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -236,6 +238,47 @@ def test_every_field_not_found_produces_not_found_facts_with_no_crash() -> None:
     assert len(facts) == 24
     assert all(f.status == FactStatus.NOT_FOUND for f in facts)
     assert all(f.sources == [] for f in facts)
+
+
+@pytest.mark.parametrize("confidence", [-0.1, 1.5, 5.0])
+def test_out_of_range_confidence_is_rejected_at_the_field_boundary(confidence: float) -> None:
+    """`TextField`/`BoolField`/`ListField.confidence` must carry the same
+    `ge=0.0, le=1.0` bound `ExtractedFact.confidence` already has -- without
+    it, an out-of-range LLM-reported confidence would sail through field
+    construction and only blow up later inside `_to_fact`'s `ExtractedFact(
+    confidence=...)` call, crashing `flatten_lease_core_terms`'s entire
+    24-field batch instead of failing fast, close to the untrusted input, at
+    the schema boundary."""
+    with pytest.raises(ValidationError):
+        TextField(value="x", quote="q", page=1, confidence=confidence)
+    with pytest.raises(ValidationError):
+        BoolField(value=True, quote="q", page=1, confidence=confidence)
+    with pytest.raises(ValidationError):
+        ListField(value=["x"], quote="q", page=1, confidence=confidence)
+
+
+async def test_a_single_out_of_range_confidence_field_does_not_crash_the_whole_extraction() -> None:
+    """Simulates the LLM reporting an out-of-range confidence for exactly
+    one of the 24 fields (bypassing normal construction by hand-crafting the
+    raw tool-call args, since a real `TextField` can no longer hold an
+    invalid value once constructed). This must surface as a well-defined
+    `pydantic_ai` validation/retry failure -- not an obscure crash deep
+    inside `_to_fact` for an unrelated field once 23 other, perfectly good
+    fields have already been processed."""
+    valid = LeaseCoreTermsExtraction(
+        lease_date=TextField(value="1 January 2024", quote="q", page=1, confidence=0.9),
+        execution_status=TextField(value="signed", quote="q", page=1, confidence=0.9),
+    )
+    bad_args = valid.model_dump(mode="json")
+    bad_args["lease_date"]["confidence"] = 5.0
+
+    def _bad_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        tool = info.output_tools[0]
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool.name, args=bad_args)])
+
+    with lease_core_terms_agent.override(model=FunctionModel(_bad_fn)):
+        with pytest.raises(UnexpectedModelBehavior):
+            await extract_lease_core_terms("... irrelevant text ...", DOCUMENT_ID)
 
 
 async def test_extraction_sends_the_documents_text_to_the_model() -> None:
