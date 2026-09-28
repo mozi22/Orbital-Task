@@ -18,7 +18,7 @@ interface ChatInputProps {
 	 * True while a risk-review run is in flight for this conversation (from
 	 * the moment the trigger request succeeds until a later ticket's SSE
 	 * completion event turns it back off — see #38/#43). Disables the button
-	 * and swaps its label so a solicitor can't fire off a second concurrent
+	 * and swaps its label so the caller can't fire off a second concurrent
 	 * run.
 	 */
 	riskReviewRunning: boolean;

@@ -79,4 +79,66 @@ describe("useRiskReview", () => {
 		await waitFor(() => expect(result.current.running).toBe(false));
 		expect(result.current.error).toBe("409: risk review already running");
 	});
+
+	it("resets running and error when switching to a different conversation", async () => {
+		vi.spyOn(api, "triggerRiskReview").mockRejectedValue(
+			new Error("409: risk review already running"),
+		);
+
+		const { result, rerender } = renderHook(
+			({ conversationId }: { conversationId: string | null }) =>
+				useRiskReview(conversationId),
+			{ initialProps: { conversationId: "conv-1" as string | null } },
+		);
+
+		await expect(result.current.trigger()).rejects.toThrow();
+		await waitFor(() => expect(result.current.error).not.toBeNull());
+
+		rerender({ conversationId: "conv-2" });
+
+		expect(result.current.running).toBe(false);
+		expect(result.current.error).toBeNull();
+	});
+
+	it("does not leave a stale in-flight guard after switching conversations mid-run", async () => {
+		vi.spyOn(api, "triggerRiskReview").mockResolvedValue({
+			run_id: "matter-1",
+			status: "running",
+		});
+
+		const { result, rerender } = renderHook(
+			({ conversationId }: { conversationId: string | null }) =>
+				useRiskReview(conversationId),
+			{ initialProps: { conversationId: "conv-1" as string | null } },
+		);
+
+		await result.current.trigger();
+		await waitFor(() => expect(result.current.running).toBe(true));
+
+		rerender({ conversationId: "conv-2" });
+		expect(result.current.running).toBe(false);
+
+		await result.current.trigger();
+
+		expect(api.triggerRiskReview).toHaveBeenCalledWith("conv-2");
+		await waitFor(() => expect(result.current.running).toBe(true));
+	});
+
+	it("clears the in-flight guard after a successful trigger, so a later run isn't stuck no-oping", async () => {
+		vi.spyOn(api, "triggerRiskReview").mockResolvedValue({
+			run_id: "matter-1",
+			status: "running",
+		});
+
+		const { result } = renderHook(() => useRiskReview("conv-1"));
+
+		await result.current.trigger();
+		await waitFor(() => expect(result.current.running).toBe(true));
+
+		// Simulate a future ticket resetting `running` externally (e.g. via
+		// SSE completion) without the hook itself ever clearing the ref.
+		await result.current.trigger();
+
+		expect(api.triggerRiskReview).toHaveBeenCalledTimes(2);
+	});
 });

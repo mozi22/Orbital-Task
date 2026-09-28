@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import type { Message } from "../types";
 import { ChatInput } from "./ChatInput";
 import { EmptyState } from "./EmptyState";
+import { ErrorBanner } from "./ErrorBanner";
 import { MessageBubble, StreamingBubble } from "./MessageBubble";
 
 interface ChatWindowProps {
@@ -88,16 +89,8 @@ export function ChatWindow({
 	if (messages.length === 0 && !streaming) {
 		return (
 			<div className="flex flex-1 flex-col bg-white">
-				{documentError && (
-					<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
-						{documentError}
-					</div>
-				)}
-				{riskReviewError && (
-					<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
-						{riskReviewError}
-					</div>
-				)}
+				{documentError && <ErrorBanner message={documentError} />}
+				{riskReviewError && <ErrorBanner message={riskReviewError} />}
 				<div className="flex flex-1 items-center justify-center">
 					{hasDocument ? (
 						<div className="text-center">
@@ -128,21 +121,9 @@ export function ChatWindow({
 
 	return (
 		<div className="flex flex-1 flex-col bg-white">
-			{error && (
-				<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
-					{error}
-				</div>
-			)}
-			{documentError && (
-				<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
-					{documentError}
-				</div>
-			)}
-			{riskReviewError && (
-				<div className="mx-4 mt-2 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">
-					{riskReviewError}
-				</div>
-			)}
+			{error && <ErrorBanner message={error} />}
+			{documentError && <ErrorBanner message={documentError} />}
+			{riskReviewError && <ErrorBanner message={riskReviewError} />}
 
 			<div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
 				<div className="mx-auto max-w-2xl space-y-1">
